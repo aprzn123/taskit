@@ -15,7 +15,7 @@ use directories::ProjectDirs;
 #[derive(clap::Parser, Debug)]
 struct CliArgs {
     #[command(subcommand)]
-    command: Option<CliSubcommands>,
+    command: CliSubcommands,
 }
 
 #[derive(Subcommand, Debug)]
@@ -29,6 +29,7 @@ enum CliSubcommands {
     Amend,
     Archive { category: String },
     Tag,
+    Note,
 }
 
 fn main() {
@@ -56,13 +57,13 @@ fn main() {
     }
     let cli_args = CliArgs::parse();
     let save_delta = match cli_args.command {
-        Some(CliSubcommands::Record) => input::record_main(save_data),
-        Some(CliSubcommands::Stopwatch) => input::stopwatch_main(save_data),
-        Some(CliSubcommands::Amend) => input::amend_main(save_data),
-        Some(CliSubcommands::Show) => output::filter_main(save_data),
-        Some(CliSubcommands::Archive { category }) => input::archive_main(save_data, category),
-        Some(CliSubcommands::Tag) => input::tag_main(save_data),
-        None => todo!(),
+        CliSubcommands::Record => input::record_main(save_data),
+        CliSubcommands::Stopwatch => input::stopwatch_main(save_data),
+        CliSubcommands::Amend => input::amend_main(save_data),
+        CliSubcommands::Show => output::filter_main(save_data),
+        CliSubcommands::Archive { category } => input::archive_main(save_data, category),
+        CliSubcommands::Tag => input::tag_main(save_data),
+        CliSubcommands::Note => input::note_main(save_data),
     };
     let mut save_data = read_save_data(&save_data_file_path).extract().0;
     save_data.apply(save_delta);
