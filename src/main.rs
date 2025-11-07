@@ -20,15 +20,22 @@ struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 enum CliSubcommands {
+    /// Add a new event, manually inputting all of its fields.
     #[clap(alias = "add")]
     Record,
-    #[clap(alias = "time")]
+    /// Start a timer and add it as an event once it's done.
+    #[clap(alias = "time", alias = "start")]
     Stopwatch,
+    /// Open the dashboard that displays all tracked time.
     #[clap(alias = "list")]
     Show,
+    /// Modify the most recently added event.
     Amend,
+    /// Mark a category as archived, so no new events will be added to it.
     Archive { category: String },
+    /// Add a tag to a category for larger aggregation.
     Tag,
+    /// Add a note to a day
     Note,
 }
 

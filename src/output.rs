@@ -407,7 +407,7 @@ impl<'a> State<'a> {
 
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Length(1), Constraint::Fill(1)])
+            .constraints(vec![Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)])
             .split(frame.area());
         let main_panel_layout = Layout::default()
             .direction(Direction::Horizontal)
@@ -423,6 +423,7 @@ impl<'a> State<'a> {
                 Constraint::Length(20),
             ])
             .split(outer_layout[0]);
+        frame.render_widget("arrow keys for navigation - enter to select", outer_layout[2]);
 
         for (i, option) in header_options.iter().enumerate() {
             frame.render_widget(
