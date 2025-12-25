@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::{BTreeMap, HashMap}, fmt::Display, io::stdout, iter, mem, ops::Add};
+use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, ops::Add};
 
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 use crossterm::{cursor::MoveTo, event::{self, Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
@@ -103,7 +103,7 @@ impl CanFilter for Filter {
             Filter::StartDate(date) => ev.date >= *date,
             Filter::EndDate(date) => ev.date <= *date,
             Filter::Category(category) => ev.category == *category,
-            Filter::Description(description) => ev.comments.contains(description),
+            Filter::Description(description) => ev.description.contains(description),
         }
     }
 }
@@ -337,7 +337,7 @@ impl<'a> State<'a> {
                             Line::default().spans(vec![
                                 Span::styled(ev.category.clone(), Style::new().blue().bold()),
                                 Span::from(" - "),
-                                ev.comments.clone().into(),
+                                ev.description.clone().into(),
                             ]),
                             Line::raw(""),
                         ]
@@ -369,16 +369,31 @@ impl<'a> State<'a> {
                     map
                 }
             );
-        let tag_sums = category_sums.iter()
-            .fold(
-                self.tags.iter().map(|tag| (tag.as_str(), TimeDelta::zero())).collect::<BTreeMap<&str, TimeDelta>>(),
-                |mut map, (cat, dur)| {
-                    for tag in self.tag_map.get(cat.to_owned()).unwrap_or(&vec![]) {
-                        *map.get_mut(tag.as_str()).unwrap() += *dur;
+        // ...so similar in structure to category_sums code; we've gotta stop doing so much code duplication.
+        // Also the loops should probably be merged so we don't end up re-iterating over the event
+        // list a million times.
+        let tag_sums = self.events.iter()
+            .filter(|ev| (&self.applied_filters, &self.editing_filter).filter(ev))
+            .fold(self.tags.iter().map(|tag| (tag.as_str(), TimeDelta::zero())).collect::<BTreeMap<&str, TimeDelta>>(),
+                |mut map, ev| {
+                    let tags = self.tag_map.get(&ev.category).into_iter().flatten().chain(&ev.tags).collect::<HashSet<_>>();
+                    for tag in tags {
+                        map.get_mut(tag.as_str()).map(|t| *t += ev.end_time - ev.start_time);
                     }
                     map
                 }
             );
+        // let tag_sums = category_sums.iter()
+        //     .fold(
+        //         self.tags.iter().map(|tag| (tag.as_str(), TimeDelta::zero())).collect::<BTreeMap<&str, TimeDelta>>(),
+        //         |mut map, (cat, dur)| {
+        //             for tag in self.tag_map.get(cat.to_owned()).unwrap_or(&vec![]) {
+        //                 *map.get_mut(tag.as_str()).unwrap() += *dur;
+        //             }
+        //             map
+        //         }
+        //     );
+
         let aggregated_data_lines: Vec<Line> = iter::once(Line::styled("Aggregated durations", Style::new().bold().underlined()))
             .chain(iter::once(Line::default().spans([
                 Span::styled("all", Style::new().bold().green()),

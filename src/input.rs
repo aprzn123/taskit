@@ -8,9 +8,65 @@ use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use inquire::{Confirm, CustomType, DateSelect, Text};
+use inquire::{Autocomplete, Confirm, CustomType, DateSelect, Text};
 
 use crate::common::{DeltaItem, Event, SaveData, SimpleTime, TagCompleter};
+
+#[derive(Clone)]
+struct DescriptionTagsAutocomplete<'a>(&'a [String]);
+
+impl<'a> Autocomplete for DescriptionTagsAutocomplete<'a> {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
+        let partial_tag = input.split(' ').last()
+            .and_then(|s| if s.starts_with('#') {Some( &s[1..]) } else { None });
+        if let Some(partial_tag) = partial_tag {
+            Ok(self.0.iter().filter(|tag| tag.starts_with(partial_tag)).map(|s| { 
+                let mut out = String::from('#'); 
+                out.push_str(s); 
+                out 
+            }).collect())
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    fn get_completion(
+        &mut self,
+        input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
+        Ok(if let Some(suggestion) = highlighted_suggestion {
+            let last_pound = input.rfind('#').unwrap();
+            let mut out = input[..last_pound].to_owned();
+            out.push_str(&suggestion);
+            Some(out)
+        } else {
+            None
+        })
+    }
+}
+
+fn get_description_tags(description: &str) -> Vec<String> {
+    description.split(' ').filter(|s| s.starts_with('#')).map(|s| s[1..].to_owned()).collect()
+}
+
+/// Retun Some of delta items required to add new tags, or None if user refused
+fn validate_description_tags(tags: &[String], valid_tags: &[String]) -> Option<Vec<DeltaItem>> {
+    let mut out = vec![];
+    for tag in tags.iter().filter(|tag| !valid_tags.contains(tag)) {
+        let create = Confirm::new(&format!(
+                "Tag #{tag} does not currently exist. Create it?"
+            ))
+            .prompt()
+            .unwrap();
+        if create {
+            out.push(DeltaItem::AddTag(tag.clone()));
+        } else {
+            return None;
+        }
+    }
+    Some(out)
+}
 
 pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
     let mut delta = vec![];
@@ -22,7 +78,7 @@ pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
         .with_autocomplete(&save_data.categories)
         .prompt()
         .unwrap();
-    let comments = Text::new("Notes:").prompt().unwrap();
+    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().unwrap();
     let end_time = CustomType::<SimpleTime>::new("End time:").prompt().unwrap();
     if !save_data.categories.options.contains(&category) {
         let create = Confirm::new(&format!(
@@ -37,12 +93,15 @@ pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
             return record_main(save_data);
         }
     }
+    let tags = get_description_tags(&comments);
+    delta.extend(validate_description_tags(&tags, &save_data.tags).unwrap());
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
         end_time,
         date,
         category,
-        comments,
+        description: comments,
+        tags,
     }));
     delta
 }
@@ -99,13 +158,16 @@ pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
         }
     }
     let category = category.unwrap();
-    let comments = Text::new("Notes:").prompt().unwrap();
+    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().unwrap();
+    let tags = get_description_tags(&comments);
+    delta.extend(validate_description_tags(&tags, &save_data.tags).unwrap());
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
         end_time,
         date,
         category,
-        comments,
+        tags,
+        description: comments,
     }));
     delta
 }
@@ -124,7 +186,7 @@ pub fn amend_main(save_data: SaveData) -> Vec<DeltaItem> {
         .with_default(&save_data.events[index].category)
         .prompt()
         .unwrap();
-    let comments = Text::new("Notes:").with_default(&save_data.events[index].comments).prompt().unwrap();
+    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).with_default(&save_data.events[index].description).prompt().unwrap();
     let end_time = CustomType::<SimpleTime>::new("End time:").with_default(save_data.events[index].end_time).prompt().unwrap();
 
     if !save_data.categories.options.contains(&category) {
@@ -140,12 +202,15 @@ pub fn amend_main(save_data: SaveData) -> Vec<DeltaItem> {
             return delta;
         }
     }
+    let tags = get_description_tags(&comments);
+    delta.extend(validate_description_tags(&tags, &save_data.tags).unwrap());
     delta.push(DeltaItem::ChangeEvent { index, new_event: Event {
         start_time,
         end_time,
         date,
         category,
-        comments,
+        tags,
+        description: comments,
     }});
     delta
 }

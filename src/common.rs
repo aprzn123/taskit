@@ -11,15 +11,6 @@ pub struct Categories {
 #[derive(Clone)]
 pub struct CategoriesPair<'a, 'b>(pub &'a Categories, pub &'b Categories);
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Event {
-    pub start_time: SimpleTime,
-    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
-    pub date: NaiveDate,
-    pub category: String,
-    pub comments: String,
-}
-
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct SimpleTime {
     pub hour: u8,
@@ -254,26 +245,26 @@ trait Upgrade {
 //               When SaveData versioning changes, update everything here
 
 // Version Update Tasks:
-//   + Define new version
-//   + Add variant to SaveDataVersioned
-//   + Update Default impl
-//   + Update SaveData type alias
-//   + Update lines 1 and 2 of SaveDataVersioned::extract
-//   + Update as_latest, outdated, upgrade_once
-//   + impl From for new version
-//   + impl Upgrade for previous version
+//   - Define new version
+//   - Add variant to SaveDataVersioned
+//   - Update Default impl
+//   - Update SaveData type alias
+//   - Update line 1 of SaveDataVersioned::extract
+//   - Update as_latest, outdated, upgrade_once
+//   - impl From for new version
+//   - impl Upgrade for previous version
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct SaveDataV1 {
     pub categories: Categories,
-    pub events: Vec<Event>,
+    pub events: Vec<EventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct SaveDataV2 {
     pub categories: Categories,
     pub archived_categories: Categories,
-    pub events: Vec<Event>,
+    pub events: Vec<EventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -283,7 +274,7 @@ pub struct SaveDataV3 {
     pub tags: Vec<String>,
     // Maps from category name to tags
     pub tag_map: HashMap<String, Vec<String>>,
-    pub events: Vec<Event>,
+    pub events: Vec<EventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -293,7 +284,18 @@ pub struct SaveDataV4 {
     pub tags: Vec<String>,
     // Maps from category name to tags
     pub tag_map: HashMap<String, Vec<String>>,
-    pub events: Vec<Event>,
+    pub events: Vec<EventV1>,
+    pub daily_notes: HashMap<NaiveDate, String>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+pub struct SaveDataV5 {
+    pub categories: Categories,
+    pub archived_categories: Categories,
+    pub tags: Vec<String>,
+    // Maps from category name to tags
+    pub tag_map: HashMap<String, Vec<String>>,
+    pub events: Vec<EventV5>,
     pub daily_notes: HashMap<NaiveDate, String>,
 }
 
@@ -303,20 +305,21 @@ pub enum SaveDataVersioned {
     V2(SaveDataV2),
     V3(SaveDataV3),
     V4(SaveDataV4),
+    V5(SaveDataV5),
 }
 
 impl Default for SaveDataVersioned {
     fn default() -> Self {
-        Self::V4(Default::default())
+        Self::V5(Default::default())
     }
 }
 
-pub type SaveData = SaveDataV4;
+pub type SaveData = SaveDataV5;
 
 impl SaveDataVersioned {
     /// Returns the latest version of SaveData, and a bool that is true iff the format was upgraded
     pub fn extract(mut self) -> (SaveData, bool) {
-        if let Self::V4(data) = self {
+        if let Self::V5(data) = self {
             (data, false)
         } else {
             while self.outdated() {
@@ -329,13 +332,13 @@ impl SaveDataVersioned {
 
     fn as_latest(self) -> SaveData {
         match self {
-            Self::V4(data) => data,
+            Self::V5(data) => data,
             _ => panic!()
         }
     }
 
     fn outdated(&self) -> bool {
-        if let Self::V4(_) = self { false } else { true }
+        if let Self::V5(_) = self { false } else { true }
     }
 
     fn upgrade_once(self) -> Self {
@@ -343,7 +346,8 @@ impl SaveDataVersioned {
             Self::V1(data) => data.upgrade().into(),
             Self::V2(data) => data.upgrade().into(),
             Self::V3(data) => data.upgrade().into(),
-            Self::V4(_) => panic!(),
+            Self::V4(data) => data.upgrade().into(),
+            Self::V5(_) => panic!(),
         }
     }
 }
@@ -371,6 +375,13 @@ impl From<SaveDataV4> for SaveDataVersioned {
         Self::V4(value)
     }
 }
+
+impl From<SaveDataV5> for SaveDataVersioned {
+    fn from(value: SaveDataV5) -> Self {
+        Self::V5(value)
+    }
+}
+
 
 impl Upgrade for SaveDataV1 {
     type Next = SaveDataV2;
@@ -409,5 +420,58 @@ impl Upgrade for SaveDataV3 {
         }
     }
 }
+
+impl Upgrade for SaveDataV4 {
+    type Next = SaveDataV5;
+    fn upgrade(self) -> Self::Next {
+        let tags = self.tags.clone();
+        SaveDataV5 {
+            categories: self.categories,
+            archived_categories: self.archived_categories,
+            tags: self.tags,
+            tag_map: self.tag_map,
+            events: self.events
+                .into_iter()
+                .map(|EventV1 { start_time, end_time, date, category, comments }| 
+                    EventV5 {
+                        start_time,
+                        end_time,
+                        date,
+                        category,
+                        description: comments.clone(),
+                        tags: comments
+                            .split(' ')
+                            .filter(|s| s.starts_with('#'))
+                            .filter(|s| tags.iter().find(|tag| tag.as_str() == &s[1..]).is_some())
+                            .map(|s| s[1..].to_owned())
+                            .collect()
+                    }
+                ).collect(),
+            daily_notes: self.daily_notes,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EventV1 {
+    pub start_time: SimpleTime,
+    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
+    pub date: NaiveDate,
+    pub category: String,
+    pub comments: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EventV5 {
+    pub start_time: SimpleTime,
+    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
+    pub date: NaiveDate,
+    pub category: String,
+    #[serde(rename = "comments")]
+    pub description: String,
+    pub tags: Vec<String>,
+}
+
+pub type Event = EventV5;
 
 // ================================= END VERSIONING WORK =================================
