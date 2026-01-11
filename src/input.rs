@@ -1,14 +1,12 @@
 use std::{
-    io::{Write, stdout},
-    thread::sleep,
-    time::Duration,
+    fmt::Display, io::{Write, stdout}, thread::sleep, time::Duration
 };
 
 use crossterm::{
     event::{self, Event as CEvent, KeyCode, KeyModifiers},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use inquire::{Autocomplete, Confirm, CustomType, DateSelect, Text};
+use inquire::{Autocomplete, Confirm, CustomType, DateSelect, Select, Text};
 
 use crate::common::{DeltaItem, Event, SaveData, SimpleTime, TagCompleter};
 
@@ -172,9 +170,21 @@ pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
     delta
 }
 
-pub fn amend_main(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn dispatch_amend(save_data: SaveData) -> Vec<DeltaItem> {
+    struct IndexedEvent<'a>(usize, &'a Event);
+    impl Display for IndexedEvent<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "({:02}) {}", self.0 + 1, self.1)
+        }
+    }
+    let reverse_index = Select::new("select entry to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().unwrap().0;
+    amend_main(save_data, reverse_index)
+}
+
+// reverse_index is the index of the entry to be amended, counting from the end of the list
+pub fn amend_main(save_data: SaveData, reverse_index: usize) -> Vec<DeltaItem> {
     let mut delta = vec![];
-    let index = save_data.events.len() - 1;
+    let index = save_data.events.len() - 1 - reverse_index;
 
     let date = DateSelect::new("Date:").with_default(save_data.events[index].date).prompt().unwrap();
     let start_time = CustomType::<SimpleTime>::new("Start time:")

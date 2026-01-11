@@ -30,7 +30,10 @@ enum CliSubcommands {
     #[clap(alias = "list")]
     Show,
     /// Modify the most recently added event.
-    Amend,
+    Amend { 
+        #[arg(long)]
+        latest: bool 
+    },
     /// Mark a category as archived, so no new events will be added to it.
     Archive { category: String },
     /// Add a tag to a category for larger aggregation.
@@ -66,7 +69,8 @@ fn main() {
     let save_delta = match cli_args.command {
         CliSubcommands::Record => input::record_main(save_data),
         CliSubcommands::Stopwatch => input::stopwatch_main(save_data),
-        CliSubcommands::Amend => input::amend_main(save_data),
+        CliSubcommands::Amend { latest: true } => input::amend_main(save_data, 0),
+        CliSubcommands::Amend { latest: false } => input::dispatch_amend(save_data),
         CliSubcommands::Show => output::filter_main(save_data),
         CliSubcommands::Archive { category } => input::archive_main(save_data, category),
         CliSubcommands::Tag => input::tag_main(save_data),

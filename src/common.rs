@@ -253,6 +253,7 @@ trait Upgrade {
 //   - Update as_latest, outdated, upgrade_once
 //   - impl From for new version
 //   - impl Upgrade for previous version
+//   - if Event is updated, update its Display impl
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct SaveDataV1 {
@@ -473,5 +474,11 @@ pub struct EventV5 {
 }
 
 pub type Event = EventV5;
+
+impl Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {} ({}, {}-{})", self.category, self.description, self.date, self.start_time, self.end_time)
+    }
+}
 
 // ================================= END VERSIONING WORK =================================
