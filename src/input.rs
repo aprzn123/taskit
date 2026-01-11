@@ -177,11 +177,11 @@ pub fn dispatch_amend(save_data: SaveData) -> Vec<DeltaItem> {
             write!(f, "({:02}) {}", self.0 + 1, self.1)
         }
     }
-    let reverse_index = Select::new("select entry to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().unwrap().0;
+    let reverse_index = Select::new("select event to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().unwrap().0;
     amend_main(save_data, reverse_index)
 }
 
-// reverse_index is the index of the entry to be amended, counting from the end of the list
+// reverse_index is the index of the event to be amended, counting from the end of the list
 pub fn amend_main(save_data: SaveData, reverse_index: usize) -> Vec<DeltaItem> {
     let mut delta = vec![];
     let index = save_data.events.len() - 1 - reverse_index;

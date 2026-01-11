@@ -20,17 +20,18 @@ struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 enum CliSubcommands {
-    /// Add a new entry, manually inputting all of its fields.
+    /// Add a new event, manually inputting all of its fields.
     #[clap(alias = "add")]
     Record,
-    /// Start a timer and add it as an entry once it's done.
+    /// Start a timer and add it as an event once it's done.
     #[clap(alias = "time", alias = "start")]
     Stopwatch,
-    /// Open the dashboard that displays all tracked time and allows you to filter tasks.
+    /// Open the dashboard that displays all tracked time and allows you to filter events.
     #[clap(alias = "list")]
     Show,
-    /// Modify the most recently added event.
+    /// Modify a previously added event.
     Amend { 
+        /// Amend the most recently added event.
         #[arg(long)]
         latest: bool 
     },
