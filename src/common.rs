@@ -88,6 +88,7 @@ impl Apply<DeltaItem> for SaveData {
             DeltaItem::AddEvent(event) => self.events.push(event),
             DeltaItem::ChangeEvent { index, new_event } => self.events[index] = new_event,
             DeltaItem::ArchiveCategory(category) => {
+                                self.tag_map.remove(&category);
                                 self.categories.options.retain(|x| *x != category);
                                 self.archived_categories.options.push(category);
                             },
@@ -305,6 +306,17 @@ pub struct SaveDataV5 {
     pub daily_notes: HashMap<NaiveDate, String>,
 }
 
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+pub struct SaveDataV6 {
+    pub categories: Categories,
+    pub archived_categories: Categories,
+    pub tags: Vec<String>,
+    /// Maps from category name to tags
+    pub tag_map: HashMap<String, Vec<String>>,
+    pub events: Vec<EventV5>,
+    pub daily_notes: HashMap<NaiveDate, String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SaveDataVersioned {
     V1(SaveDataV1),
@@ -312,20 +324,21 @@ pub enum SaveDataVersioned {
     V3(SaveDataV3),
     V4(SaveDataV4),
     V5(SaveDataV5),
+    V6(SaveDataV6),
 }
 
 impl Default for SaveDataVersioned {
     fn default() -> Self {
-        Self::V5(Default::default())
+        Self::V6(Default::default())
     }
 }
 
-pub type SaveData = SaveDataV5;
+pub type SaveData = SaveDataV6;
 
 impl SaveDataVersioned {
     /// Returns the latest version of SaveData, and a bool that is true iff the format was upgraded
     pub fn extract(mut self) -> (SaveData, bool) {
-        if let Self::V5(data) = self {
+        if let Self::V6(data) = self {
             (data, false)
         } else {
             while self.outdated() {
@@ -338,13 +351,13 @@ impl SaveDataVersioned {
 
     fn as_latest(self) -> SaveData {
         match self {
-            Self::V5(data) => data,
+            Self::V6(data) => data,
             _ => panic!()
         }
     }
 
     fn outdated(&self) -> bool {
-        if let Self::V5(_) = self { false } else { true }
+        if let Self::V6(_) = self { false } else { true }
     }
 
     fn upgrade_once(self) -> Self {
@@ -353,7 +366,8 @@ impl SaveDataVersioned {
             Self::V2(data) => data.upgrade().into(),
             Self::V3(data) => data.upgrade().into(),
             Self::V4(data) => data.upgrade().into(),
-            Self::V5(_) => panic!(),
+            Self::V5(data) => data.upgrade().into(),
+            Self::V6(_) => panic!(),
         }
     }
 }
@@ -385,6 +399,12 @@ impl From<SaveDataV4> for SaveDataVersioned {
 impl From<SaveDataV5> for SaveDataVersioned {
     fn from(value: SaveDataV5) -> Self {
         Self::V5(value)
+    }
+}
+
+impl From<SaveDataV6> for SaveDataVersioned {
+    fn from(value: SaveDataV6) -> Self {
+        Self::V6(value)
     }
 }
 
@@ -455,6 +475,15 @@ impl Upgrade for SaveDataV4 {
                 ).collect(),
             daily_notes: self.daily_notes,
         }
+    }
+}
+
+impl Upgrade for SaveDataV5 {
+    type Next = SaveDataV6;
+    fn upgrade(self) -> Self::Next {
+        let SaveDataV5 { categories, archived_categories, tags, mut tag_map, events, daily_notes } = self;
+        archived_categories.options.iter().for_each(|c| {tag_map.remove(c);});
+        SaveDataV6 { categories, archived_categories, tags, tag_map, events, daily_notes }
     }
 }
 
