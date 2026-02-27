@@ -8,7 +8,7 @@ use crossterm::{
 };
 use inquire::{Autocomplete, Confirm, CustomType, DateSelect, Select, Text};
 
-use crate::common::{DeltaItem, Event, SaveData, SimpleTime, TagCompleter};
+use crate::common::{CategoriesPair, DeltaItem, Event, SaveData, SimpleTime, TagCompleter};
 
 #[derive(Clone)]
 struct DescriptionTagsAutocomplete<'a>(&'a [String]);
@@ -78,6 +78,10 @@ pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
         .unwrap();
     let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().unwrap();
     let end_time = CustomType::<SimpleTime>::new("End time:").prompt().unwrap();
+    if save_data.archived_categories.options.contains(&category) {
+        println!("Category {category} is archived. Try again!");
+        return record_main(save_data);
+    }
     if !save_data.categories.options.contains(&category) {
         let create = Confirm::new(&format!(
             "Category {category} does not currently exist. Create it?"
@@ -145,6 +149,8 @@ pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
             .unwrap();
         if save_data.categories.options.contains(&category_selection) {
             category = Some(category_selection);
+        } else if save_data.archived_categories.options.contains(&category_selection) {
+            println!("Category {category_selection} is archived. Try again!");
         } else if Confirm::new(&format!(
             "Category {category_selection} does not currently exist. Create it?"
         ))
@@ -199,6 +205,10 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> Vec<DeltaItem> {
     let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).with_default(&save_data.events[index].description).prompt().unwrap();
     let end_time = CustomType::<SimpleTime>::new("End time:").with_default(save_data.events[index].end_time).prompt().unwrap();
 
+    if save_data.archived_categories.options.contains(&category) {
+        println!("Cannot update event with archived category {category}.");
+        return delta;
+    }
     if !save_data.categories.options.contains(&category) {
         let create = Confirm::new(&format!(
             "Category {category} does not currently exist. Create it?"
@@ -265,4 +275,19 @@ pub fn note_main(save_data: SaveData) -> Vec<DeltaItem> {
     let date = DateSelect::new("Date:").prompt().unwrap();
     let note = inquire::Editor::new("Daily Note:").with_predefined_text(save_data.daily_notes.get(&date).map(String::as_str).unwrap_or("")).prompt().unwrap();
     vec![DeltaItem::SetDailyNote(date, note)]
+}
+
+pub fn rename_category(save_data: SaveData) -> Vec<DeltaItem> {
+    let category = Text::new("Select a category to rename:")
+        .with_autocomplete(CategoriesPair(&save_data.categories, &save_data.archived_categories))
+        .with_validator(CategoriesPair(&save_data.categories, &save_data.archived_categories))
+        .prompt()
+        .unwrap();
+    let new_name = Text::new("Select a new category name").prompt().unwrap();
+    if save_data.categories.options.contains(&new_name) || save_data.archived_categories.options.contains(&new_name) {
+        println!("Category {new_name} already exists!");
+        vec![]
+    } else {
+        vec![DeltaItem::RenameCategory { old: category, new: new_name}]
+    }
 }

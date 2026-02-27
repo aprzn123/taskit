@@ -79,7 +79,12 @@ impl Apply<DeltaItem> for SaveData {
                                             self.categories.options.push(category);
                                         }
                                     }
-            DeltaItem::RenameCategory { old, new } => todo!(),
+            DeltaItem::RenameCategory { old, new } => {
+                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
+                self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
+            },
             DeltaItem::AddEvent(event) => self.events.push(event),
             DeltaItem::ChangeEvent { index, new_event } => self.events[index] = new_event,
             DeltaItem::ArchiveCategory(category) => {
@@ -294,7 +299,7 @@ pub struct SaveDataV5 {
     pub categories: Categories,
     pub archived_categories: Categories,
     pub tags: Vec<String>,
-    // Maps from category name to tags
+    /// Maps from category name to tags
     pub tag_map: HashMap<String, Vec<String>>,
     pub events: Vec<EventV5>,
     pub daily_notes: HashMap<NaiveDate, String>,

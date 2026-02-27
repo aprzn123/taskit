@@ -41,6 +41,8 @@ enum CliSubcommands {
     Tag,
     /// Add a note to a day
     Note,
+    /// Change the name of a category
+    RenameCategory,
 }
 
 fn main() {
@@ -76,6 +78,7 @@ fn main() {
         CliSubcommands::Archive { category } => input::archive_main(save_data, category),
         CliSubcommands::Tag => input::tag_main(save_data),
         CliSubcommands::Note => input::note_main(save_data),
+        CliSubcommands::RenameCategory => input::rename_category(save_data),
     };
     let mut save_data = read_save_data(&save_data_file_path).extract().0;
     save_data.apply(save_delta);
