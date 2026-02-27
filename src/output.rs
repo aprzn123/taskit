@@ -432,14 +432,16 @@ impl<'a> State<'a> {
         let header_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(20),
-                Constraint::Length(20),
-                Constraint::Length(20),
-                Constraint::Length(20),
+                Constraint::Length(15),
+                Constraint::Length(15),
+                Constraint::Length(15),
+                Constraint::Length(15),
+                Constraint::Length(15),
             ])
             .split(outer_layout[0]);
         frame.render_widget("arrow keys for navigation - enter to select", outer_layout[2]);
 
+        frame.render_widget(Text::styled("Filters:", Style::new().bold()), header_layout[0]);
         for (i, option) in header_options.iter().enumerate() {
             frame.render_widget(
                 Paragraph::new(Text::styled(
@@ -450,7 +452,7 @@ impl<'a> State<'a> {
                         Style::new()
                     },
                 )),
-                header_layout[i],
+                header_layout[i + 1],
             );
         }
         frame.render_widget(filters_widget, main_panel_layout[0]);
