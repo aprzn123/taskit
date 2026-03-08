@@ -1,13 +1,17 @@
-use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, ops::Add};
+use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::mpsc, thread, time::{Duration, Instant}};
 
-use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta};
 use crossterm::{cursor::MoveTo, event::{self, Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
 use itertools::Itertools;
 use ratatui::{
     layout::{Constraint, Direction, Layout}, style::{Style, Stylize}, text::{Line, Span, Text}, widgets::{Block, Paragraph}, Frame
 };
+use smallvec::SmallVec;
 
 use crate::common::{Categories, CategoriesPair, DeltaItem, Event, SaveData};
+
+// 1 is a bit stupid but it might be what we want
+type MessageVec = SmallVec<[Message; 1]>;
 
 enum Message {
     Exit,
@@ -20,13 +24,7 @@ enum Message {
     Backspace,
     FinishFilter,
     CancelFilter,
-}
-
-// Messages to trigger events that can't be contained to the update function
-enum Extrinsic {
-    Halt,
-    // for after we temporarily break out of the ratatui environment
-    ResetRatatui,
+    BlinkCursor(bool),
 }
 
 struct State<'a> {
@@ -40,6 +38,16 @@ struct State<'a> {
     header_highlight: usize,
     applied_filters: Vec<Filter>,
     editing_filter: Option<Filter>,
+    cursor_blink: bool,
+    last_cursor_show_time: Instant,
+}
+
+/// Messages to trigger events that can't be contained to the update function
+enum Extrinsic {
+    Halt,
+    /// for after we temporarily break out of the ratatui environment
+    ResetRatatui,
+    ResolveAfter(Duration, Box<dyn Send + FnOnce(&State) -> MessageVec>),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -157,15 +165,41 @@ pub fn filter_main(save_data: SaveData) -> Vec<DeltaItem> {
         tags: &save_data.tags,
         tag_map: &save_data.tag_map,
         daily_notes: &save_data.daily_notes,
+        cursor_blink: true,
+        last_cursor_show_time: Instant::now(),
+    };
+    let (keypress_tx, keypress_rx) = mpsc::channel();
+    {
+        let tx = keypress_tx.clone();
+        thread::spawn(move || {
+            // TODO: somehow do this poll in the main thread*??? otherwise we're fucked and this
+            // design won't work at all
+            // *or bring inquire calls into this thread somehow
+
+            // can we alternate between listening for events and listening for "another thread
+            // requests to call inquire" effectively and performantly? - may be our only solution
+            loop {
+                let event = event::read().unwrap();
+                tx.send(Ok(event));
+            }
+        });
     };
     let mut halt = false;
+    messages.push(Message::BlinkCursor(true));
     while !halt {
         terminal.draw(|f| state.render(f)).unwrap();
-        state.handle_keypresses(|m| messages.push(m));
+        messages.extend(state.handle_keypresses(&keypress_rx));
         for message in mem::take(&mut messages).into_iter() {
             match state.handle_message(message) {
                 Some(Extrinsic::Halt) => {halt = true;},
                 Some(Extrinsic::ResetRatatui) => {terminal.clear();},
+                Some(Extrinsic::ResolveAfter(duration, res)) => {
+                    let tx = keypress_tx.clone();
+                    thread::spawn(move || {
+                        thread::sleep(duration);
+                        tx.send(Err(res));
+                    });
+                },
                 None => {},
             }
         }
@@ -204,6 +238,7 @@ impl<'a> State<'a> {
                                 return Some(Extrinsic::ResetRatatui);
                             },
                             FilterCategory::Category => {
+                                // temporarily breaking out of ratatui
                                 execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
                                 disable_raw_mode();
                                 let category = inquire::Text::new("Select a category:")
@@ -220,11 +255,15 @@ impl<'a> State<'a> {
                     },
             Message::KeyTyped(c) => {
                 if let Some(Filter::Description(ref mut cat)) = self.editing_filter {
+                    self.last_cursor_show_time = Instant::now();
+                    self.cursor_blink = true;
                     cat.push(c);
                 }
             },
             Message::Backspace => {
                 if let Some(Filter::Description(ref mut cat)) = self.editing_filter {
+                    self.last_cursor_show_time = Instant::now();
+                    self.cursor_blink = true;
                     cat.pop();
                 }
             },
@@ -236,68 +275,80 @@ impl<'a> State<'a> {
             Message::CancelFilter => {
                 self.editing_filter = None;
             },
+            Message::BlinkCursor(real) => {
+                if real {
+                    self.cursor_blink = !self.cursor_blink;
+                }
+                return Some(Extrinsic::ResolveAfter(Duration::from_millis(500), Box::new(|state| {
+                        [Message::BlinkCursor(state.last_cursor_show_time.elapsed() > Duration::from_millis(500))].into()
+                })))
+            }
         }
         None
     }
 
-    fn handle_keypresses(&self, mut emit: impl FnMut(Message)) {
-        let event = event::read().unwrap();
+    /// blocks until a keypress is received or until a ResolveAfter extrinsic has resolved
+    fn handle_keypresses(&self, rx: &mpsc::Receiver<Result<CEvent, Box<dyn Send + FnOnce(&State) -> MessageVec>>>) -> MessageVec {
+        let event = rx.recv().unwrap();
         match event {
-            CEvent::Key(key_event)
+            Ok(CEvent::Key(key_event))
                 if key_event.is_press()
                 && key_event.code.is_char('c')
                 && key_event.modifiers == KeyModifiers::CONTROL
-                => emit(Message::Exit),
-            CEvent::Key(key_event) 
+                => [Message::Exit].into(),
+            Ok(CEvent::Key(key_event))
                 if key_event.is_press() 
                 && key_event.code.is_down() 
-                => emit(Message::ScrollDown),
-            CEvent::Key(key_event) 
+                => [Message::ScrollDown].into(),
+            Ok(CEvent::Key(key_event))
                 if key_event.is_press() 
                 && key_event.code.is_up() 
-                => emit(Message::ScrollUp),
-            _ => {
+                => [Message::ScrollUp].into(),
+            Ok(_) => {
                 if let Some(Filter::Description(_)) = self.editing_filter {
                     match event {
-                        CEvent::Key(key_event) 
+                        Ok(CEvent::Key(key_event) )
                         if key_event.is_press() 
                         && key_event.code.is_backspace()
-                        => emit(Message::Backspace),
-                        CEvent::Key(key_event)
+                        => [Message::Backspace].into(),
+                        Ok(CEvent::Key(key_event))
                         if key_event.is_press()
                         && key_event.code.is_enter() 
-                        => emit(Message::FinishFilter),
-                        CEvent::Key(key_event)
+                        => [Message::FinishFilter].into(),
+                        Ok(CEvent::Key(key_event))
                         if key_event.is_press()
                         && key_event.code.is_esc() 
-                        => emit(Message::CancelFilter),
-                        CEvent::Key(key_event) 
+                        => [Message::CancelFilter].into(),
+                        Ok(CEvent::Key(key_event))
                         if key_event.is_press() 
                         && key_event.code.as_char().is_some()
-                        => emit(Message::KeyTyped(key_event.code.as_char().unwrap())),
-                        _ => {}
+                        => [Message::KeyTyped(key_event.code.as_char().unwrap())].into(),
+                        _ => SmallVec::new()
                     }
                 } else {
                     match event {
-                        CEvent::Key(key_event)
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_char('q')
-                            => emit(Message::Exit),
-                        CEvent::Key(key_event)
+                            => [Message::Exit].into(),
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_left()
-                            => emit(Message::TabLeft),
-                        CEvent::Key(key_event)
+                            => [Message::TabLeft].into(),
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_right()
-                            => emit(Message::TabRight),
-                        CEvent::Key(key_event)
+                            => [Message::TabRight].into(),
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_enter()
-                            => emit(Message::Enter),
-                        _ => {}
+                            => [Message::Enter].into(),
+                        _ => SmallVec::new()
                     }
                 }
+            }
+            Err(apply) => {
+                apply(self)
             }
         }
     }
@@ -353,7 +404,10 @@ impl<'a> State<'a> {
 
         let filters_lines: Vec<Line> = self.applied_filters.iter()
             .map(ToString::to_string)
-            .chain(self.editing_filter.iter().map(|f| format!("(*) {f}")))
+            .chain(self.editing_filter.iter().map(|f| {
+                let cursor = if self.cursor_blink {"\u{2588}"} else {""};
+                format!("(*) {f}{cursor}")
+            }))
             .map(Line::raw)
             .collect();
         let filters_widget = Paragraph::new(filters_lines)
