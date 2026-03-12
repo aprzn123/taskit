@@ -1,6 +1,6 @@
 use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::{mpsc::{self, RecvTimeoutError}, LazyLock}, thread, time::{Duration, Instant}};
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta};
+use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 use crossterm::{cursor::MoveTo, event::{self, Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
 use inquire::error::InquireResult;
 use itertools::Itertools;

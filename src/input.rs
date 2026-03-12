@@ -175,14 +175,32 @@ pub fn stopwatch_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     Ok(delta)
 }
 
-pub fn dispatch_amend(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
+/// prompts the user to select an event. events are displayed in reverse order, and the index given
+/// is reversed (0 for last element, 1 for next to last, etc)
+fn prompt_for_reverse_index(save_data: &SaveData) -> TaskitResult<usize> {
     struct IndexedEvent<'a>(usize, &'a Event);
     impl Display for IndexedEvent<'_> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "({:02}) {}", self.0 + 1, self.1)
         }
     }
-    let reverse_index = Select::new("select event to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().with(Source::SelectingEntry)?.0;
+     Ok(Select::new("select event to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().with(Source::SelectingEntry)?.0)
+}
+
+pub fn delete_event_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
+    let reverse_index = prompt_for_reverse_index(&save_data)?;
+    let index = save_data.events.len() - 1 - reverse_index;
+    let confirm = Confirm::new(format!("Are you sure you want to delete this event? {} [y/n]", save_data.events[index]).as_str())
+        .prompt().with(Source::ConfirmingDelete)?;
+    if confirm {
+        Ok(vec![DeltaItem::DeleteEvent(index)])
+    } else {
+        Err(Kind::Cancelled.with(Source::ConfirmingDelete))
+    }
+}
+
+pub fn dispatch_amend(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
+    let reverse_index = prompt_for_reverse_index(&save_data)?;
     amend_main(save_data, reverse_index)
 }
 

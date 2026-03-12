@@ -43,6 +43,8 @@ enum CliSubcommands {
     Note,
     /// Change the name of a category
     RenameCategory,
+    /// Delete a previously recorded event
+    DeleteEvent,
 }
 
 fn main() -> ExitCode {
@@ -81,6 +83,7 @@ fn main() -> ExitCode {
         CliSubcommands::Tag => input::tag_main(save_data),
         CliSubcommands::Note => input::note_main(save_data),
         CliSubcommands::RenameCategory => input::rename_category(save_data),
+        CliSubcommands::DeleteEvent => input::delete_event_main(save_data),
     };
     let save_delta = match save_delta {
         Ok(d) => d,

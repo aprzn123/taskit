@@ -29,6 +29,7 @@ pub enum DeltaItem {
     AddTag(String),
     TagCategory(String, String),
     SetDailyNote(NaiveDate, String),
+    DeleteEvent(usize),
 }
 
 pub mod error {
@@ -66,6 +67,7 @@ pub mod error {
         UpdatingCategory,
         DrawingTui,
         SettingFilter,
+        ConfirmingDelete,
     }
 
     pub type TaskitResult<T> = Result<T, TaskitError>;
@@ -85,6 +87,7 @@ pub mod error {
                 Source::UpdatingCategory => "updating a category",
                 Source::DrawingTui => "performing TUI operations",
                 Source::SettingFilter => "setting a filter",
+                Source::ConfirmingDelete => "confirming deletion",
             }
         }
     }
@@ -238,6 +241,7 @@ impl Apply<DeltaItem> for SaveData {
                         } 
                     },
             DeltaItem::SetDailyNote(date, note) => {self.daily_notes.insert(date, note);},
+            DeltaItem::DeleteEvent(index) => {self.events.remove(index);},
         }
         Ok(())
     }
