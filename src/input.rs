@@ -309,3 +309,36 @@ pub fn rename_category(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         Ok(vec![DeltaItem::RenameCategory { old: category, new: new_name}])
     }
 }
+
+pub fn delete_category_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
+    let mut delta = vec![];
+    let category = Text::new("Select a category to delete:")
+        .with_autocomplete(CategoriesPair(&save_data.categories, &save_data.archived_categories))
+        .with_validator(CategoriesPair(&save_data.categories, &save_data.archived_categories))
+        .prompt()
+        .with(Source::DeletingCategory)?;
+    if save_data.events.iter().find(|ev| ev.category == category).is_some() {
+        return Err(Kind::CategoryNotEmpty(category.clone()).with(Source::DeletingCategory));
+    }
+    if !Confirm::new(&format!("Are you sure you want to delete category {category}? [y/n]")).prompt().with(Source::DeletingCategory)? {
+        return Err(Kind::Cancelled.with(Source::DeletingCategory));
+    }
+    if save_data.categories.options.contains(&category) {
+        delta.push(DeltaItem::ArchiveCategory(category.clone()));
+    }
+    delta.push(DeltaItem::DeleteCategory(category));
+    Ok(delta)
+}
+
+pub fn delete_tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
+    let tag = Text::new("Select a tag to delete:")
+        .with_autocomplete(TagCompleter(save_data.tags.as_ref()))
+        .with_validator(TagCompleter(save_data.tags.as_ref()))
+        .prompt()
+        .with(Source::DeletingTag)?;
+    let tag = if tag.starts_with('#') { tag[1..].to_owned() } else { tag };
+    if !Confirm::new(&format!("Are you sure you want to delete tag #{tag}? [y/n]")).prompt().with(Source::DeletingTag)? {
+        return Err(Kind::Cancelled.with(Source::DeletingTag));
+    }
+    Ok(vec![DeltaItem::DeleteTag(tag)])
+}

@@ -246,7 +246,7 @@ pub fn filter_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
                         let tx = keypress_tx.clone();
                         s.spawn(move || {
                             thread::sleep(duration);
-                            tx.send(Err(res)).expect("we know this will succeed because keypress_rx lives past this point");
+                            let _ = tx.send(Err(res));
                         });
                     },
                     None => {},
@@ -497,16 +497,6 @@ impl<'a> State<'a> {
                     map
                 }
             );
-        // let tag_sums = category_sums.iter()
-        //     .fold(
-        //         self.tags.iter().map(|tag| (tag.as_str(), TimeDelta::zero())).collect::<BTreeMap<&str, TimeDelta>>(),
-        //         |mut map, (cat, dur)| {
-        //             for tag in self.tag_map.get(cat.to_owned()).unwrap_or(&vec![]) {
-        //                 *map.get_mut(tag.as_str()).unwrap() += *dur;
-        //             }
-        //             map
-        //         }
-        //     );
 
         let aggregated_data_lines: Vec<Line> = iter::once(Line::styled("Aggregated durations", Style::new().bold().underlined()))
             .chain(iter::once(Line::default().spans([

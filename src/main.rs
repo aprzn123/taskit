@@ -45,6 +45,10 @@ enum CliSubcommands {
     RenameCategory,
     /// Delete a previously recorded event
     DeleteEvent,
+    /// Delete a category that has no events in it
+    DeleteCategory,
+    /// Delete any tag
+    DeleteTag,
 }
 
 fn main() -> ExitCode {
@@ -84,6 +88,8 @@ fn main() -> ExitCode {
         CliSubcommands::Note => input::note_main(save_data),
         CliSubcommands::RenameCategory => input::rename_category(save_data),
         CliSubcommands::DeleteEvent => input::delete_event_main(save_data),
+        CliSubcommands::DeleteCategory => input::delete_category_main(save_data),
+        CliSubcommands::DeleteTag => input::delete_tag_main(save_data),
     };
     let save_delta = match save_delta {
         Ok(d) => d,

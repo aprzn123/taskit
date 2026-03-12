@@ -19,7 +19,7 @@ pub struct SimpleTime {
     pub minute: u8,
 }
 
-// One change in the save file.
+/// One change in the save file.
 pub enum DeltaItem {
     AddCategory(String),
     RenameCategory { old: String, new: String },
@@ -30,6 +30,9 @@ pub enum DeltaItem {
     TagCategory(String, String),
     SetDailyNote(NaiveDate, String),
     DeleteEvent(usize),
+    /// Assumes category is already archived
+    DeleteCategory(String),
+    DeleteTag(String),
 }
 
 pub mod error {
@@ -49,6 +52,7 @@ pub mod error {
         CategoryArchived(String),
         NoSuchCategory(String),
         DuplicateCategory(String),
+        CategoryNotEmpty(String),
         Other(Box<dyn Error>),
     }
 
@@ -68,6 +72,8 @@ pub mod error {
         DrawingTui,
         SettingFilter,
         ConfirmingDelete,
+        DeletingCategory,
+        DeletingTag,
     }
 
     pub type TaskitResult<T> = Result<T, TaskitError>;
@@ -88,6 +94,8 @@ pub mod error {
                 Source::DrawingTui => "performing TUI operations",
                 Source::SettingFilter => "setting a filter",
                 Source::ConfirmingDelete => "confirming deletion",
+                Source::DeletingCategory => "deleting a category",
+                Source::DeletingTag => "deleting a tag",
             }
         }
     }
@@ -101,6 +109,7 @@ pub mod error {
                 Kind::CategoryArchived(c) => write!(f, "Operation ({activity}) could not be completed because category {c} is archived."),
                 Kind::NoSuchCategory(c) => write!(f, "While {activity}, tried to use category '{c}', which doesn't exist."),
                 Kind::DuplicateCategory(c) => write!(f, "While {activity}, tried to create category '{c}', which already exists."),
+                Kind::CategoryNotEmpty(c) => write!(f, "Category {c} was not empty while {activity}."),
                 Kind::Other(error) => write!(f, "An external error occurred while {activity}: {error}"),
             }
         }
@@ -214,34 +223,40 @@ impl Apply<DeltaItem> for SaveData {
     fn apply(&mut self, delta: DeltaItem) -> TaskitResult<()> {
         match delta {
             DeltaItem::AddCategory(category) => {
-                                        if !self.categories.options.contains(&category) {
-                                            self.categories.options.push(category);
-                                        }
-                                    }
+                                                if !self.categories.options.contains(&category) {
+                                                    self.categories.options.push(category);
+                                                }
+                                            }
             DeltaItem::RenameCategory { old, new } => {
-                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
-                self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
-            },
+                        self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                        self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                        self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
+                        self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
+                    },
             DeltaItem::AddEvent(event) => self.events.push(event),
             DeltaItem::ChangeEvent { index, new_event } => self.events[index] = new_event,
             DeltaItem::ArchiveCategory(category) => {
-                                self.tag_map.remove(&category);
-                                self.categories.options.retain(|x| *x != category);
-                                self.archived_categories.options.push(category);
-                            },
+                                        self.tag_map.remove(&category);
+                                        self.categories.options.retain(|x| *x != category);
+                                        self.archived_categories.options.push(category);
+                                    },
             DeltaItem::AddTag(tag) => if !self.tags.contains(&tag) { self.tags.push(tag); },
             DeltaItem::TagCategory(category, tag) => {
-                        if !self.tag_map.contains_key(&category) {
-                            self.tag_map.insert(category.clone(), vec![]);
-                        }
-                        if !self.tag_map[&category].contains(&tag) {
-                            if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
-                        } 
-                    },
+                                if !self.tag_map.contains_key(&category) {
+                                    self.tag_map.insert(category.clone(), vec![]);
+                                }
+                                if !self.tag_map[&category].contains(&tag) {
+                                    if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
+                                } 
+                            },
             DeltaItem::SetDailyNote(date, note) => {self.daily_notes.insert(date, note);},
             DeltaItem::DeleteEvent(index) => {self.events.remove(index);},
+            DeltaItem::DeleteCategory(c) => self.archived_categories.options.retain(|x| x != &c),
+            DeltaItem::DeleteTag(t) => {
+                self.tags.retain(|x| x != &t);
+                self.tag_map.iter_mut().for_each(|(_, v)| v.retain(|x| x != &t));
+                self.events.iter_mut().for_each(|ev| ev.tags.retain(|x| x != &t));
+            },
         }
         Ok(())
     }
@@ -339,6 +354,17 @@ impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
 impl StringValidator for &Categories {
     fn validate(&self, input: &str) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
         if self.options.contains(&input.to_owned()) {
+            Ok(Validation::Valid)
+        } else {
+            Ok(Validation::Invalid(ErrorMessage::Default))
+        }
+    }
+}
+
+impl<'a> StringValidator for TagCompleter<'a> {
+    fn validate(&self, input: &str) -> Result<Validation, inquire::CustomUserError> {
+        let tag = if input.starts_with('#') { &input[1..] } else { input };
+        if self.0.contains(&tag.to_owned()) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
