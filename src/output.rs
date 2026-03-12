@@ -1,4 +1,4 @@
-use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, ops::Add};
+use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::LazyLock};
 
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
 use crossterm::{cursor::MoveTo, event::{self, Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout}, style::{Style, Stylize}, text::{Line, Span, Text}, widgets::{Block, Paragraph}, Frame
 };
 
-use crate::common::{Categories, CategoriesPair, DeltaItem, Event, SaveData};
+use crate::common::{Categories, CategoriesPair, DeltaItem, Event, SaveData, error::{Source, TaskitResult, With}};
 
 enum Message {
     Exit,
@@ -42,14 +42,14 @@ struct State<'a> {
     editing_filter: Option<Filter>,
 }
 
-#[derive(Clone, Copy, Debug)]
-#[repr(usize)]
-enum FilterCategory {
-    StartDate,
-    EndDate,
-    Category,
-    Description,
-}
+static HEADER: LazyLock<&[HeaderButton]> = LazyLock::new(|| vec![
+    HeaderButton::Filter(Filter::StartDate(Default::default())),
+    HeaderButton::Filter(Filter::EndDate(Default::default())),
+    HeaderButton::Filter(Filter::Category(Default::default())),
+    HeaderButton::Filter(Filter::Description(Default::default())),
+    HeaderButton::DeleteLastFilter,
+    HeaderButton::ClearFilters,
+].leak());
 
 enum Filter {
     StartDate(NaiveDate),
@@ -58,28 +58,24 @@ enum Filter {
     Description(String),
 }
 
-impl From<FilterCategory> for usize {
-    fn from(value: FilterCategory) -> Self {
-        value as Self
-    }
+enum HeaderButton {
+    /// NOTE: argument here should be discriminant, it's only not bc rust makes that a PITA
+    Filter(Filter),
+    DeleteLastFilter,
+    ClearFilters,
 }
 
-impl TryFrom<usize> for FilterCategory {
-    type Error = ();
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Self::StartDate),
-            1 => Ok(Self::EndDate),
-            2 => Ok(Self::Category),
-            3 => Ok(Self::Description),
-            _ => Err(())
+impl Display for HeaderButton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HeaderButton::Filter(Filter::StartDate(_)) => write!(f, "Start Date"),
+            HeaderButton::Filter(Filter::EndDate(_)) => write!(f, "End Date"),
+            HeaderButton::Filter(Filter::Category(_)) => write!(f, "Category"),
+            HeaderButton::Filter(Filter::Description(_)) => write!(f, "Description"),
+            HeaderButton::DeleteLastFilter => write!(f, "(delete last)"),
+            HeaderButton::ClearFilters => write!(f, "(reset)"),
         }
     }
-}
-
-impl FilterCategory {
-    const SIZE: usize = 3;
 }
 
 impl Display for Filter {
@@ -137,12 +133,12 @@ fn duration_to_string(duration: &TimeDelta) -> String {
     duration_string
 }
 
-pub fn filter_main(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn filter_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let mut terminal = ratatui::init();
     let mut messages: Vec<Message> = Vec::new();
     let mut events = save_data.events.clone();
     events.sort_by_key(|e| {
-        -NaiveDateTime::new(e.date, e.start_time.into())
+        -NaiveDateTime::new(e.date, e.start_time.try_into().expect("trust that save file only contains valid timestamps"))
             .and_utc()
             .timestamp()
     });
@@ -160,62 +156,68 @@ pub fn filter_main(save_data: SaveData) -> Vec<DeltaItem> {
     };
     let mut halt = false;
     while !halt {
-        terminal.draw(|f| state.render(f)).unwrap();
+        terminal.draw(|f| state.render(f)).expect("core assumption: terminal works");
         state.handle_keypresses(|m| messages.push(m));
         for message in mem::take(&mut messages).into_iter() {
-            match state.handle_message(message) {
+            match state.handle_message(message)? {
                 Some(Extrinsic::Halt) => {halt = true;},
-                Some(Extrinsic::ResetRatatui) => {terminal.clear();},
+                Some(Extrinsic::ResetRatatui) => {terminal.clear().with(Source::DrawingTui)?;},
                 None => {},
             }
         }
     }
     ratatui::restore();
-    vec![]
+    Ok(vec![])
 }
 
 impl<'a> State<'a> {
-    // returns true to halt program, false otherwise
-    fn handle_message(&mut self, message: Message) -> Option<Extrinsic> {
+    fn handle_message(&mut self, message: Message) -> TaskitResult<Option<Extrinsic>> {
         match message {
-            Message::Exit => return Some(Extrinsic::Halt),
+            Message::Exit => return Ok(Some(Extrinsic::Halt)),
             Message::ScrollDown => self.scroll_position = self.scroll_position.saturating_add(3),
             Message::ScrollUp => self.scroll_position = self.scroll_position.saturating_sub(3),
             Message::TabLeft => self.header_highlight = self.header_highlight.saturating_sub(1),
-            Message::TabRight => self.header_highlight = min(self.header_highlight + 1, FilterCategory::SIZE),
+            Message::TabRight => self.header_highlight = min(self.header_highlight + 1, HEADER.len()),
             Message::Enter => {
-                        match self.header_highlight.try_into().unwrap() {
-                            FilterCategory::StartDate => {
+                        match HEADER[self.header_highlight] {
+                            HeaderButton::Filter(Filter::StartDate(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
-                                disable_raw_mode();
-                                let date = inquire::DateSelect::new("Start date filter:").prompt().unwrap();
-                                enable_raw_mode();
-                                self.applied_filters.push(Filter::StartDate(date));
-                                return Some(Extrinsic::ResetRatatui);
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
+                                disable_raw_mode().with(Source::DrawingTui)?;
+                                let date = inquire::DateSelect::new("Start date filter:").prompt();
+                                enable_raw_mode().with(Source::DrawingTui)?;
+                                if let Ok(date) = date {
+                                    self.applied_filters.push(Filter::StartDate(date));
+                                }
+                                return Ok(Some(Extrinsic::ResetRatatui));
                             },
-                            FilterCategory::EndDate => {
+                            HeaderButton::Filter(Filter::EndDate(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
-                                disable_raw_mode();
-                                let date = inquire::DateSelect::new("Start date filter:").prompt().unwrap();
-                                enable_raw_mode();
-                                self.applied_filters.push(Filter::EndDate(date));
-                                return Some(Extrinsic::ResetRatatui);
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
+                                disable_raw_mode().with(Source::DrawingTui)?;
+                                let date = inquire::DateSelect::new("Start date filter:").prompt();
+                                enable_raw_mode().with(Source::DrawingTui)?;
+                                if let Ok(date) = date {
+                                    self.applied_filters.push(Filter::EndDate(date));
+                                }
+                                return Ok(Some(Extrinsic::ResetRatatui));
                             },
-                            FilterCategory::Category => {
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
-                                disable_raw_mode();
+                            HeaderButton::Filter(Filter::Category(_)) => {
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
+                                disable_raw_mode().with(Source::DrawingTui)?;
                                 let category = inquire::Text::new("Select a category:")
                                     .with_autocomplete(CategoriesPair(&self.categories, &self.archived_categories))
                                     .with_validator(CategoriesPair(&self.categories, &self.archived_categories))
-                                    .prompt()
-                                    .unwrap();
-                                enable_raw_mode();
-                                self.applied_filters.push(Filter::Category(category));
-                                return Some(Extrinsic::ResetRatatui);
+                                    .prompt();
+                                enable_raw_mode().with(Source::DrawingTui)?;
+                                if let Ok(category) = category {
+                                    self.applied_filters.push(Filter::Category(category));
+                                }
+                                return Ok(Some(Extrinsic::ResetRatatui));
                             },
-                            FilterCategory::Description => self.editing_filter = Some(Filter::Description(String::new())),
+                            HeaderButton::Filter(Filter::Description(_)) => self.editing_filter = Some(Filter::Description(String::new())),
+                            HeaderButton::ClearFilters => self.applied_filters.clear(),
+                            HeaderButton::DeleteLastFilter => { self.applied_filters.pop(); },
                         }
                     },
             Message::KeyTyped(c) => {
@@ -237,11 +239,11 @@ impl<'a> State<'a> {
                 self.editing_filter = None;
             },
         }
-        None
+        Ok(None)
     }
 
     fn handle_keypresses(&self, mut emit: impl FnMut(Message)) {
-        let event = event::read().unwrap();
+        let event = event::read().expect("core assumption: terminal works");
         match event {
             CEvent::Key(key_event)
                 if key_event.is_press()
@@ -274,7 +276,7 @@ impl<'a> State<'a> {
                         CEvent::Key(key_event) 
                         if key_event.is_press() 
                         && key_event.code.as_char().is_some()
-                        => emit(Message::KeyTyped(key_event.code.as_char().unwrap())),
+                        => emit(Message::KeyTyped(key_event.code.as_char().expect("verified is_some() in condition"))),
                         _ => {}
                     }
                 } else {
@@ -428,21 +430,14 @@ impl<'a> State<'a> {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Fill(1), Constraint::Fill(1), Constraint::Fill(1)])
             .split(outer_layout[1]);
-        let header_options = ["Start Date", "End Date", "Category", "Description"];
         let header_layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(15),
-                Constraint::Length(15),
-                Constraint::Length(15),
-                Constraint::Length(15),
-                Constraint::Length(15),
-            ])
+            .constraints(iter::repeat_n(Constraint::Length(15), HEADER.len() + 1))
             .split(outer_layout[0]);
         frame.render_widget("arrow keys for navigation - enter to select", outer_layout[2]);
 
         frame.render_widget(Text::styled("Filters:", Style::new().bold()), header_layout[0]);
-        for (i, option) in header_options.iter().enumerate() {
+        for (i, option) in HEADER.iter().enumerate() {
             frame.render_widget(
                 Paragraph::new(Text::styled(
                     option.to_string(),

@@ -1,7 +1,9 @@
 use chrono::{NaiveDate, TimeDelta, Timelike};
-use inquire::{validator::{ErrorMessage, StringValidator, Validation}, Autocomplete};
+use inquire::{Autocomplete, validator::{ErrorMessage, StringValidator, Validation}};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, error::Error, fmt::Display, ops::Sub, str::FromStr};
+use std::{collections::HashMap, fmt::Display, ops::Sub, str::FromStr};
+
+use crate::common::error::TaskitResult;
 
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
 pub struct Categories {
@@ -27,6 +29,138 @@ pub enum DeltaItem {
     AddTag(String),
     TagCategory(String, String),
     SetDailyNote(NaiveDate, String),
+}
+
+pub mod error {
+    use std::{error::Error, fmt::Display, io};
+
+    use inquire::InquireError;
+
+    #[derive(Debug)]
+    pub struct TaskitError {
+        pub kind: Kind,
+        pub source: Source
+    }
+
+    #[derive(Debug)]
+    pub enum Kind {
+        Cancelled,
+        CategoryArchived(String),
+        NoSuchCategory(String),
+        DuplicateCategory(String),
+        Other(Box<dyn Error>),
+    }
+
+    /// Used in TaskitError for "error occurred while attempting to [...]"
+    #[derive(Debug)]
+    pub enum Source {
+        CreatingTag,
+        CreatingEntry,
+        CreatingCategory,
+        RunningStopwatch,
+        SelectingEntry,
+        EditingEntry,
+        ArchivingCategory,
+        UpdatingTag,
+        EditingNote,
+        UpdatingCategory,
+        DrawingTui,
+    }
+
+    pub type TaskitResult<T> = Result<T, TaskitError>;
+
+    impl Source {
+        fn activity(&self) -> &'static str {
+            match self {
+                Source::CreatingTag => "creating a tag",
+                Source::CreatingEntry => "creating an entry",
+                Source::CreatingCategory => "creating a category",
+                Source::RunningStopwatch => "stopwatch was running",
+                Source::SelectingEntry => "selecting an entry to edit",
+                Source::EditingEntry => "editing an entry",
+                Source::ArchivingCategory => "archiving a category",
+                Source::UpdatingTag => "updating a tag",
+                Source::EditingNote => "editing a daily note",
+                Source::UpdatingCategory => "updating a category",
+                Source::DrawingTui => "performing TUI operations",
+            }
+        }
+    }
+
+    impl Display for TaskitError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let Self {kind, source} = self;
+            let activity = source.activity();
+            match kind {
+                Kind::Cancelled => write!(f, "User cancelled while {activity}."),
+                Kind::CategoryArchived(c) => write!(f, "Operation ({activity}) could not be completed because category {c} is archived."),
+                Kind::NoSuchCategory(c) => write!(f, "While {activity}, tried to use category '{c}', which doesn't exist."),
+                Kind::DuplicateCategory(c) => write!(f, "While {activity}, tried to create category '{c}', which already exists."),
+                Kind::Other(error) => write!(f, "An external error occurred while {activity}: {error}"),
+            }
+        }
+    }
+
+    impl Error for TaskitError { }
+
+    impl From<(InquireError, Source)> for TaskitError {
+        fn from((value, source): (InquireError, Source)) -> Self {
+            match value {
+                InquireError::NotTTY => panic!("Taskit assumes it is running in an interactive terminal"),
+                InquireError::InvalidConfiguration(s) => panic!("internal error: invalid configuration\n{}", s),
+                InquireError::IO(error) => error.with(source).into(),
+                InquireError::OperationCanceled => Self { kind: Kind::Cancelled, source },
+                InquireError::OperationInterrupted => Self{ kind: Kind::Cancelled, source },
+                InquireError::Custom(error) => Self { kind: Kind::Other(error), source },
+            }
+        }
+    }
+
+    impl From<(io::Error, Source)> for TaskitError {
+        fn from((value, source): (io::Error, Source)) -> Self {
+            Self { kind: Kind::Other(Box::new(value)), source }
+        }
+    }
+
+    /// attaches source data to a given error
+    pub trait With<T>: Sized {
+        type Joined;
+        fn with(self, source: T) -> Self::Joined;
+    }
+
+    impl With<Source> for io::Error {
+        type Joined = (Self, Source);
+
+        fn with(self, source: Source) -> Self::Joined {
+            (self, source)
+        }
+    }
+
+    impl With<Source> for InquireError {
+        type Joined = (Self, Source);
+
+        fn with(self, source: Source) -> Self::Joined {
+            (self, source)
+        }
+    }
+
+    impl With<Source> for Kind {
+        type Joined = TaskitError;
+
+        fn with(self, source: Source) -> Self::Joined {
+            TaskitError { kind: self, source }
+        }
+    }
+
+    impl<T, E> With<Source> for Result<T, E>
+    where E: With<Source>
+    {
+        type Joined = Result<T, E::Joined>;
+
+        fn with(self, source: Source) -> Self::Joined {
+            self.map_err(|e| e.with(source))
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -68,11 +202,11 @@ impl FromStr for SimpleTime {
 }
 
 pub trait Apply<T> {
-    fn apply(&mut self, delta: T) -> Result<(), Box<dyn Error>>;
+    fn apply(&mut self, delta: T) -> TaskitResult<()>;
 }
 
 impl Apply<DeltaItem> for SaveData {
-    fn apply(&mut self, delta: DeltaItem) -> Result<(), Box<dyn Error>> {
+    fn apply(&mut self, delta: DeltaItem) -> TaskitResult<()> {
         match delta {
             DeltaItem::AddCategory(category) => {
                                         if !self.categories.options.contains(&category) {
@@ -108,7 +242,7 @@ impl Apply<DeltaItem> for SaveData {
 }
 
 impl Apply<Vec<DeltaItem>> for SaveData {
-    fn apply(&mut self, delta: Vec<DeltaItem>) -> Result<(), Box<dyn Error>> {
+    fn apply(&mut self, delta: Vec<DeltaItem>) -> TaskitResult<()> {
         for delta in delta {
             self.apply(delta)?;
         }
@@ -215,9 +349,10 @@ impl From<chrono::NaiveTime> for SimpleTime {
     }
 }
 
-impl From<SimpleTime> for chrono::NaiveTime {
-    fn from(value: SimpleTime) -> Self {
-        chrono::NaiveTime::from_hms_opt(value.hour as u32, value.minute as u32, 0).unwrap()
+impl TryFrom<SimpleTime> for chrono::NaiveTime {
+    type Error = ();
+    fn try_from(value: SimpleTime) -> Result<Self, ()> {
+        chrono::NaiveTime::from_hms_opt(value.hour as u32, value.minute as u32, 0).ok_or(())
     }
 }
 

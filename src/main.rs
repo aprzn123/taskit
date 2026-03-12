@@ -5,7 +5,7 @@ mod output;
 use std::{
     fs::{File, create_dir_all, rename},
     io::{Read, Write},
-    path::Path,
+    path::Path, process::ExitCode,
 };
 
 use clap::{Parser, Subcommand};
@@ -45,16 +45,18 @@ enum CliSubcommands {
     RenameCategory,
 }
 
-fn main() {
-    #[cfg(debug_assertions)]
-    let project_dirs = ProjectDirs::from("xyz", "interestingzinc", "taskit_debug").unwrap();
-    #[cfg(not(debug_assertions))]
-    let project_dirs = ProjectDirs::from("xyz", "interestingzinc", "taskit").unwrap();
+fn main() -> ExitCode {
+    let project_dirs = ProjectDirs::from(
+        "xyz", 
+        "interestingzinc", 
+        if cfg!(debug_assertions) { "taskit_debug" } else { "taskit" }
+    ).expect("assume that there is a home directory");
+
     let save_data_file_path = {
         let mut path = project_dirs.data_dir().to_path_buf();
         if !path.exists() {
             println!("data directory does not exist. creating...");
-            create_dir_all(&path).unwrap();
+            create_dir_all(&path).expect("assume we have access to data directory - can't run without");
         }
         path.push("save.json");
         path
@@ -65,7 +67,7 @@ fn main() {
             &save_data_file_path,
             save_data_file_path.with_extension(".upgrade_bak"),
         )
-        .unwrap();
+        .expect("assume file rename is possible");
         write_save_data(save_data.clone(), &save_data_file_path);
     }
     let cli_args = CliArgs::parse();
@@ -80,16 +82,25 @@ fn main() {
         CliSubcommands::Note => input::note_main(save_data),
         CliSubcommands::RenameCategory => input::rename_category(save_data),
     };
+    let save_delta = match save_delta {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("{e} No modifications made.");
+            return ExitCode::FAILURE;
+        },
+    };
     let mut save_data = read_save_data(&save_data_file_path).extract().0;
-    save_data.apply(save_delta);
+    save_data.apply(save_delta).expect("save_delta doesn't actually return an error ever");
     write_save_data(save_data, &save_data_file_path);
+    ExitCode::SUCCESS
 }
 
 fn read_save_data(path: impl AsRef<Path>) -> SaveDataVersioned {
     let mut save_data = String::new();
     if let Ok(mut save_data_file) = File::open(path) {
-        save_data_file.read_to_string(&mut save_data).unwrap();
-        serde_json::from_str::<SaveDataVersioned>(&save_data).unwrap()
+        save_data_file.read_to_string(&mut save_data).expect("save data file should be readable and utf-8");
+        // TODO perhaps indicate the error in more detail in the case that deserialization fails?
+        serde_json::from_str::<SaveDataVersioned>(&save_data).expect("save data file should be valid JSON in the save data format")
     } else {
         Default::default()
     }
@@ -98,8 +109,8 @@ fn read_save_data(path: impl AsRef<Path>) -> SaveDataVersioned {
 fn write_save_data(data: SaveData, path: impl AsRef<Path>) {
     let save_data_temp_path = path.as_ref().with_extension("tmp");
     {
-        let mut save_data_temp_file = File::create(&path).unwrap();
-        save_data_temp_file.write_all(&serde_json::to_vec(&SaveDataVersioned::from(data)).unwrap());
+        let mut save_data_temp_file = File::create(&path).expect("path should be known to be valid and file creation should be allowed");
+        save_data_temp_file.write_all(&serde_json::to_vec(&SaveDataVersioned::from(data)).expect("the file we just created should be writable")).expect("we should be able to write to the save file");
     }
-    rename(save_data_temp_path, &path);
+    rename(save_data_temp_path, &path).expect("we should be able to rename files");
 }

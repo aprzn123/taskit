@@ -8,7 +8,7 @@ use crossterm::{
 };
 use inquire::{Autocomplete, Confirm, CustomType, DateSelect, Select, Text};
 
-use crate::common::{CategoriesPair, DeltaItem, Event, SaveData, SimpleTime, TagCompleter};
+use crate::common::{CategoriesPair, DeltaItem, Event, SaveData, SimpleTime, TagCompleter, error::{Kind, Source, TaskitResult, With}};
 
 #[derive(Clone)]
 struct DescriptionTagsAutocomplete<'a>(&'a [String]);
@@ -34,7 +34,10 @@ impl<'a> Autocomplete for DescriptionTagsAutocomplete<'a> {
         highlighted_suggestion: Option<String>,
     ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
         Ok(if let Some(suggestion) = highlighted_suggestion {
-            let last_pound = input.rfind('#').unwrap();
+            let last_pound = input.rfind('#').expect("
+                there will only be a highlighted suggestion if there were suggestions; 
+                there will only be suggestions if there was a # in the input string
+                ");
             let mut out = input[..last_pound].to_owned();
             out.push_str(&suggestion);
             Some(out)
@@ -48,36 +51,34 @@ fn get_description_tags(description: &str) -> Vec<String> {
     description.split(' ').filter(|s| s.starts_with('#')).map(|s| s[1..].to_owned()).collect()
 }
 
-/// Retun Some of delta items required to add new tags, or None if user refused
-fn validate_description_tags(tags: &[String], valid_tags: &[String]) -> Option<Vec<DeltaItem>> {
+/// Retun Ok of delta items required to add new tags, or Err if user refused
+fn validate_description_tags(tags: &[String], valid_tags: &[String]) -> TaskitResult<Vec<DeltaItem>> {
     let mut out = vec![];
     for tag in tags.iter().filter(|tag| !valid_tags.contains(tag)) {
         let create = Confirm::new(&format!(
                 "Tag #{tag} does not currently exist. Create it?"
             ))
             .prompt()
-            .unwrap();
+            .with(Source::CreatingTag)?;
         if create {
             out.push(DeltaItem::AddTag(tag.clone()));
         } else {
-            return None;
+            return Err(Kind::Cancelled.with(Source::CreatingTag));
         }
     }
-    Some(out)
+    Ok(out)
 }
 
-pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn record_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let mut delta = vec![];
-    let date = DateSelect::new("Date:").prompt().unwrap();
-    let start_time = CustomType::<SimpleTime>::new("Start time:")
-        .prompt()
-        .unwrap();
+    let date = DateSelect::new("Date:").prompt().with(Source::CreatingEntry)?;
+    let start_time = CustomType::<SimpleTime>::new("Start time:").prompt().with(Source::CreatingEntry)?;
     let category = Text::new("Select a category:")
         .with_autocomplete(&save_data.categories)
         .prompt()
-        .unwrap();
-    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().unwrap();
-    let end_time = CustomType::<SimpleTime>::new("End time:").prompt().unwrap();
+        .with(Source::CreatingEntry)?;
+    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().with(Source::CreatingEntry)?;
+    let end_time = CustomType::<SimpleTime>::new("End time:").prompt().with(Source::CreatingEntry)?;
     if save_data.archived_categories.options.contains(&category) {
         println!("Category {category} is archived. Try again!");
         return record_main(save_data);
@@ -86,8 +87,7 @@ pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
         let create = Confirm::new(&format!(
             "Category {category} does not currently exist. Create it?"
         ))
-        .prompt()
-        .unwrap();
+        .prompt().with(Source::CreatingCategory)?;
         if create {
             delta.push(DeltaItem::AddCategory(category.clone()));
         } else {
@@ -96,7 +96,7 @@ pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
         }
     }
     let tags = get_description_tags(&comments);
-    delta.extend(validate_description_tags(&tags, &save_data.tags).unwrap());
+    delta.extend(validate_description_tags(&tags, &save_data.tags)?);
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
         end_time,
@@ -105,15 +105,15 @@ pub fn record_main(save_data: SaveData) -> Vec<DeltaItem> {
         description: comments,
         tags,
     }));
-    delta
+    Ok(delta)
 }
 
-pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn stopwatch_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let mut delta = vec![];
     let start_datetime = chrono::Local::now();
     let date = start_datetime.date_naive();
     let start_time: SimpleTime = start_datetime.time().into();
-    enable_raw_mode().unwrap();
+    enable_raw_mode().with(Source::RunningStopwatch)?;
     'l: loop {
         let now: SimpleTime = chrono::Local::now().time().into();
         let timedelta = now - start_time;
@@ -122,14 +122,14 @@ pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
             timedelta.num_hours(),
             timedelta.num_minutes() % 60,
         );
-        stdout().flush();
-        while event::poll(Duration::ZERO).unwrap() {
-            if let CEvent::Key(ev) = event::read().unwrap() {
+        stdout().flush().with(Source::DrawingTui)?;
+        while event::poll(Duration::ZERO).with(Source::RunningStopwatch)? {
+            if let CEvent::Key(ev) = event::read().with(Source::RunningStopwatch)? {
                 if ev.is_press()
                     && ev.code == KeyCode::Char('c')
                     && ev.modifiers == KeyModifiers::CONTROL
                 {
-                    return delta;
+                    return Err(Kind::Cancelled.with(Source::RunningStopwatch));
                 } else if ev.is_press() && ev.code == KeyCode::Enter {
                     break 'l;
                 }
@@ -137,34 +137,33 @@ pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
         }
         sleep(Duration::from_millis(500));
     }
-    disable_raw_mode().unwrap();
+    disable_raw_mode().with(Source::RunningStopwatch)?;
     println!();
     let end_datetime = chrono::Local::now();
     let end_time: SimpleTime = end_datetime.time().into();
-    let mut category = None;
-    while category.is_none() {
+    let category = loop {
         let category_selection = Text::new("Select a category:")
             .with_autocomplete(&save_data.categories)
             .prompt()
-            .unwrap();
+            .with(Source::CreatingEntry)?;
         if save_data.categories.options.contains(&category_selection) {
-            category = Some(category_selection);
+            break category_selection;
         } else if save_data.archived_categories.options.contains(&category_selection) {
             println!("Category {category_selection} is archived. Try again!");
-        } else if Confirm::new(&format!(
-            "Category {category_selection} does not currently exist. Create it?"
-        ))
-        .prompt()
-        .unwrap()
+        } else if 
+            Confirm::new(&format!(
+                "Category {category_selection} does not currently exist. Create it?"
+            ))
+            .prompt()
+            .with(Source::CreatingCategory)?
         {
             delta.push(DeltaItem::AddCategory(category_selection.clone()));
-            category = Some(category_selection);
+            break category_selection;
         }
-    }
-    let category = category.unwrap();
-    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().unwrap();
+    };
+    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).prompt().with(Source::CreatingEntry)?;
     let tags = get_description_tags(&comments);
-    delta.extend(validate_description_tags(&tags, &save_data.tags).unwrap());
+    delta.extend(validate_description_tags(&tags, &save_data.tags)?);
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
         end_time,
@@ -173,57 +172,56 @@ pub fn stopwatch_main(save_data: SaveData) -> Vec<DeltaItem> {
         tags,
         description: comments,
     }));
-    delta
+    Ok(delta)
 }
 
-pub fn dispatch_amend(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn dispatch_amend(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     struct IndexedEvent<'a>(usize, &'a Event);
     impl Display for IndexedEvent<'_> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "({:02}) {}", self.0 + 1, self.1)
         }
     }
-    let reverse_index = Select::new("select event to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().unwrap().0;
+    let reverse_index = Select::new("select event to modify", save_data.events.iter().rev().enumerate().map(|(n, ev)| IndexedEvent(n, ev)).collect::<Vec<IndexedEvent>>()).prompt().with(Source::SelectingEntry)?.0;
     amend_main(save_data, reverse_index)
 }
 
 // reverse_index is the index of the event to be amended, counting from the end of the list
-pub fn amend_main(save_data: SaveData, reverse_index: usize) -> Vec<DeltaItem> {
+pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec<DeltaItem>> {
     let mut delta = vec![];
     let index = save_data.events.len() - 1 - reverse_index;
 
-    let date = DateSelect::new("Date:").with_default(save_data.events[index].date).prompt().unwrap();
+    let date = DateSelect::new("Date:").with_default(save_data.events[index].date).prompt().with(Source::EditingEntry)?;
     let start_time = CustomType::<SimpleTime>::new("Start time:")
         .with_default(save_data.events[index].start_time)
         .prompt()
-        .unwrap();
+        .with(Source::EditingEntry)?;
     let category = Text::new("Select a category:")
         .with_autocomplete(&save_data.categories)
         .with_default(&save_data.events[index].category)
         .prompt()
-        .unwrap();
-    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).with_default(&save_data.events[index].description).prompt().unwrap();
-    let end_time = CustomType::<SimpleTime>::new("End time:").with_default(save_data.events[index].end_time).prompt().unwrap();
+        .with(Source::EditingEntry)?;
+    let comments = Text::new("Notes:").with_autocomplete(DescriptionTagsAutocomplete(save_data.tags.as_ref())).with_default(&save_data.events[index].description).prompt().with(Source::EditingEntry)?;
+    let end_time = CustomType::<SimpleTime>::new("End time:").with_default(save_data.events[index].end_time).prompt().with(Source::EditingEntry)?;
 
     if save_data.archived_categories.options.contains(&category) {
-        println!("Cannot update event with archived category {category}.");
-        return delta;
+        // println!("Cannot update event with archived category {category}.");
+        return Err(Kind::CategoryArchived(category).with(Source::EditingEntry));
     }
     if !save_data.categories.options.contains(&category) {
         let create = Confirm::new(&format!(
             "Category {category} does not currently exist. Create it?"
         ))
-        .prompt()
-        .unwrap();
+        .prompt().with(Source::CreatingCategory)?;
         if create {
             delta.push(DeltaItem::AddCategory(category.clone()));
         } else {
-            println!("Cannot update event with nonexistent category.");
-            return delta;
+            // println!("Cannot update event with nonexistent category.");
+            return Err(Kind::Cancelled.with(Source::CreatingCategory));
         }
     }
     let tags = get_description_tags(&comments);
-    delta.extend(validate_description_tags(&tags, &save_data.tags).unwrap());
+    delta.extend(validate_description_tags(&tags, &save_data.tags)?);
     delta.push(DeltaItem::ChangeEvent { index, new_event: Event {
         start_time,
         end_time,
@@ -232,62 +230,64 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> Vec<DeltaItem> {
         tags,
         description: comments,
     }});
-    delta
+    Ok(delta)
 }
 
-pub fn archive_main(save_data: SaveData, category: String) -> Vec<DeltaItem> {
+pub fn archive_main(save_data: SaveData, category: String) -> TaskitResult<Vec<DeltaItem>> {
     if save_data.categories.options.contains(&category) {
-        vec![DeltaItem::ArchiveCategory(category)]
+        Ok(vec![DeltaItem::ArchiveCategory(category)])
+    } else if save_data.archived_categories.options.contains(&category) {
+        Err(Kind::CategoryArchived(category).with(Source::ArchivingCategory))
     } else {
-        vec![]
+        Err(Kind::NoSuchCategory(category).with(Source::ArchivingCategory))
     }
 }
 
-pub(crate) fn tag_main(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let mut delta = vec![];
     let category = Text::new("Select a category to tag:")
         .with_autocomplete(&save_data.categories)
         .with_validator(&save_data.categories)
         .prompt()
-        .unwrap();
+        .with(Source::UpdatingTag)?;
     let tag = Text::new("Select a tag:")
         .with_autocomplete(TagCompleter(&save_data.tags))
         .prompt()
-        .unwrap();
+        .with(Source::UpdatingTag)?;
     let tag = if tag.starts_with('#') { tag[1..].to_owned() } else { tag };
     if !save_data.tags.contains(&tag) {
         let create = Confirm::new(&format!(
                 "Tag #{tag} does not currently exist. Create it?"
             ))
             .prompt()
-            .unwrap();
+            .with(Source::CreatingTag)?;
         if create {
             delta.push(DeltaItem::AddTag(tag.clone()));
         } else {
-            return vec![];
+            return Err(Kind::Cancelled.with(Source::CreatingTag));
         }
     }
     delta.push(DeltaItem::TagCategory(category, tag));
-    delta
+    Ok(delta)
 }
 
-pub fn note_main(save_data: SaveData) -> Vec<DeltaItem> {
-    let date = DateSelect::new("Date:").prompt().unwrap();
-    let note = inquire::Editor::new("Daily Note:").with_predefined_text(save_data.daily_notes.get(&date).map(String::as_str).unwrap_or("")).prompt().unwrap();
-    vec![DeltaItem::SetDailyNote(date, note)]
+pub fn note_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
+    let date = DateSelect::new("Date:").prompt().with(Source::EditingNote)?;
+    let note = inquire::Editor::new("Daily Note:").with_predefined_text(save_data.daily_notes.get(&date).map(String::as_str).unwrap_or("")).prompt().with(Source::EditingNote)?;
+    Ok(vec![DeltaItem::SetDailyNote(date, note)])
 }
 
-pub fn rename_category(save_data: SaveData) -> Vec<DeltaItem> {
+pub fn rename_category(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let category = Text::new("Select a category to rename:")
         .with_autocomplete(CategoriesPair(&save_data.categories, &save_data.archived_categories))
         .with_validator(CategoriesPair(&save_data.categories, &save_data.archived_categories))
         .prompt()
-        .unwrap();
-    let new_name = Text::new("Select a new category name").prompt().unwrap();
+        .with(Source::UpdatingCategory)?;
+    let new_name = Text::new("Select a new category name").prompt().with(Source::UpdatingCategory)?;
     if save_data.categories.options.contains(&new_name) || save_data.archived_categories.options.contains(&new_name) {
-        println!("Category {new_name} already exists!");
-        vec![]
+        // println!("Category {new_name} already exists!");
+        Err(Kind::DuplicateCategory(category).with(Source::UpdatingCategory))
     } else {
-        vec![DeltaItem::RenameCategory { old: category, new: new_name}]
+        Ok(vec![DeltaItem::RenameCategory { old: category, new: new_name}])
     }
 }
