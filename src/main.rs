@@ -1,6 +1,6 @@
 mod common;
 mod input;
-mod output;
+mod tui;
 
 use std::{
     fs::{File, create_dir_all, rename},
@@ -76,7 +76,7 @@ fn main() -> ExitCode {
         CliSubcommands::Stopwatch => input::stopwatch_main(save_data),
         CliSubcommands::Amend { latest: true } => input::amend_main(save_data, 0),
         CliSubcommands::Amend { latest: false } => input::dispatch_amend(save_data),
-        CliSubcommands::Show => output::filter_main(save_data),
+        CliSubcommands::Show => tui::filter_main(save_data),
         CliSubcommands::Archive { category } => input::archive_main(save_data, category),
         CliSubcommands::Tag => input::tag_main(save_data),
         CliSubcommands::Note => input::note_main(save_data),
@@ -89,9 +89,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         },
     };
-    let mut save_data = read_save_data(&save_data_file_path).extract().0;
-    save_data.apply(save_delta).expect("save_delta doesn't actually return an error ever");
-    write_save_data(save_data, &save_data_file_path);
+    if !save_delta.is_empty() {
+        let mut save_data = read_save_data(&save_data_file_path).extract().0;
+        save_data.apply(save_delta).expect("save_delta doesn't actually return an error ever");
+        write_save_data(save_data, &save_data_file_path);
+    }
     ExitCode::SUCCESS
 }
 
@@ -109,7 +111,7 @@ fn read_save_data(path: impl AsRef<Path>) -> SaveDataVersioned {
 fn write_save_data(data: SaveData, path: impl AsRef<Path>) {
     let save_data_temp_path = path.as_ref().with_extension("tmp");
     {
-        let mut save_data_temp_file = File::create(&path).expect("path should be known to be valid and file creation should be allowed");
+        let mut save_data_temp_file = File::create(&save_data_temp_path).expect("path should be known to be valid and file creation should be allowed");
         save_data_temp_file.write_all(&serde_json::to_vec(&SaveDataVersioned::from(data)).expect("the file we just created should be writable")).expect("we should be able to write to the save file");
     }
     rename(save_data_temp_path, &path).expect("we should be able to rename files");

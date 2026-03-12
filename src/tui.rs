@@ -1,13 +1,18 @@
-use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::LazyLock};
+use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::{mpsc::{self, RecvTimeoutError}, LazyLock}, thread, time::{Duration, Instant}};
 
-use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta};
 use crossterm::{cursor::MoveTo, event::{self, Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
+use inquire::error::InquireResult;
 use itertools::Itertools;
 use ratatui::{
     layout::{Constraint, Direction, Layout}, style::{Style, Stylize}, text::{Line, Span, Text}, widgets::{Block, Paragraph}, Frame
 };
+use smallvec::SmallVec;
 
 use crate::common::{Categories, CategoriesPair, DeltaItem, Event, SaveData, error::{Source, TaskitResult, With}};
+
+// 1 is a bit stupid but it might be what we want
+type MessageVec = SmallVec<[Message; 1]>;
 
 enum Message {
     Exit,
@@ -20,13 +25,7 @@ enum Message {
     Backspace,
     FinishFilter,
     CancelFilter,
-}
-
-// Messages to trigger events that can't be contained to the update function
-enum Extrinsic {
-    Halt,
-    // for after we temporarily break out of the ratatui environment
-    ResetRatatui,
+    BlinkCursor(bool),
 }
 
 struct State<'a> {
@@ -40,6 +39,16 @@ struct State<'a> {
     header_highlight: usize,
     applied_filters: Vec<Filter>,
     editing_filter: Option<Filter>,
+    cursor_blink: bool,
+    last_cursor_show_time: Instant,
+}
+
+/// Messages to trigger events that can't be contained to the update function
+enum Extrinsic {
+    Halt,
+    /// for after we temporarily break out of the ratatui environment
+    ResetRatatui,
+    ResolveAfter(Duration, Box<dyn Send + FnOnce(&State) -> MessageVec>),
 }
 
 static HEADER: LazyLock<&[HeaderButton]> = LazyLock::new(|| vec![
@@ -63,6 +72,32 @@ enum HeaderButton {
     Filter(Filter),
     DeleteLastFilter,
     ClearFilters,
+}
+
+enum InquireRequest<'a, 'b, 'c> {
+    DateSelect(&'a str),
+    CategoryFilter {categories: &'b Categories, archived_categories: &'c Categories},
+}
+
+enum InquireResponse {
+    Date(InquireResult<NaiveDate>),
+    Category(InquireResult<String>),
+}
+
+impl InquireResponse {
+    fn date(self) -> Option<InquireResult<NaiveDate>> {
+        match self {
+            Self::Date(d) => Some(d),
+            _ => None
+        }
+    }
+
+    fn category(self) -> Option<InquireResult<String>> {
+        match self {
+            Self::Category(c) => Some(c),
+            _ => None
+        }
+    }
 }
 
 impl Display for HeaderButton {
@@ -134,44 +169,97 @@ fn duration_to_string(duration: &TimeDelta) -> String {
 }
 
 pub fn filter_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
-    let mut terminal = ratatui::init();
-    let mut messages: Vec<Message> = Vec::new();
-    let mut events = save_data.events.clone();
-    events.sort_by_key(|e| {
-        -NaiveDateTime::new(e.date, e.start_time.try_into().expect("trust that save file only contains valid timestamps"))
-            .and_utc()
-            .timestamp()
-    });
-    let mut state = State {
-        categories: &save_data.categories,
-        archived_categories: &save_data.archived_categories,
-        events,
-        scroll_position: 0,
-        header_highlight: 0,
-        applied_filters: vec![],
-        editing_filter: None,
-        tags: &save_data.tags,
-        tag_map: &save_data.tag_map,
-        daily_notes: &save_data.daily_notes,
-    };
-    let mut halt = false;
-    while !halt {
-        terminal.draw(|f| state.render(f)).expect("core assumption: terminal works");
-        state.handle_keypresses(|m| messages.push(m));
-        for message in mem::take(&mut messages).into_iter() {
-            match state.handle_message(message)? {
-                Some(Extrinsic::Halt) => {halt = true;},
-                Some(Extrinsic::ResetRatatui) => {terminal.clear().with(Source::DrawingTui)?;},
-                None => {},
+    thread::scope(|s| {
+        let mut terminal = ratatui::init();
+        let mut messages: Vec<Message> = Vec::new();
+        let mut events = save_data.events.clone();
+        events.sort_by_key(|e| {
+            -NaiveDateTime::new(e.date, e.start_time.try_into()
+                .expect("trust that save file only contains valid timestamps"))
+                .and_utc()
+                .timestamp()
+        });
+        let mut state = State {
+            categories: &save_data.categories,
+            archived_categories: &save_data.archived_categories,
+            events,
+            scroll_position: 0,
+            header_highlight: 0,
+            applied_filters: vec![],
+            editing_filter: None,
+            tags: &save_data.tags,
+            tag_map: &save_data.tag_map,
+            daily_notes: &save_data.daily_notes,
+            cursor_blink: true,
+            last_cursor_show_time: Instant::now(),
+        };
+        let (keypress_tx, keypress_rx) = mpsc::channel();
+        let (inquire_request_tx, inquire_request_rx) = mpsc::channel::<InquireRequest>();
+        let (inquire_response_tx, inquire_response_rx) = mpsc::channel::<InquireResponse>();
+        {
+            let tx = keypress_tx.clone();
+            let inquire_rx = inquire_request_rx;
+            let inquire_tx = inquire_response_tx;
+            // this thread will eventually exit because when the scope exits, first variables
+            // (including senders/receivers) are dropped and *then* we join the thread.
+            // if it was the other way around, we'd deadlock ourselves immediately
+            s.spawn(move || {
+                loop {
+                    let event_available = event::poll(Duration::from_millis(50)).expect("assume that terminal works");
+                    if event_available {
+                        let event = event::read().expect("just polled that one is real");
+                        if let Err(_) = tx.send(Ok(event)) { return };
+                    }
+                    let request = match inquire_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(r) => Some(r),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(_) => return,
+                    };
+                    if let Some(request) = request {
+                        let response = match request {
+                            InquireRequest::DateSelect(s) => InquireResponse::Date(inquire::DateSelect::new(s).prompt()),
+
+                            InquireRequest::CategoryFilter { categories, archived_categories } => InquireResponse::Category(
+                                inquire::Text::new("Select a category:")
+                                .with_autocomplete(CategoriesPair(categories, archived_categories))
+                                .with_validator(CategoriesPair(categories, archived_categories))
+                                .prompt()
+                            ),
+                        };
+                        if let Err(_) = inquire_tx.send(response) {
+                            return;
+                        }
+                    }
+                }
+            });
+        };
+        let mut halt = false;
+        messages.push(Message::BlinkCursor(true));
+        while !halt {
+            terminal.draw(|f| state.render(f)).unwrap();
+            messages.extend(state.generate_messages(&keypress_rx));
+            for message in mem::take(&mut messages).into_iter() {
+                match state.handle_message(message, &inquire_request_tx, &inquire_response_rx)? {
+                    Some(Extrinsic::Halt) => {halt = true;},
+                    Some(Extrinsic::ResetRatatui) => {terminal.clear();},
+                    Some(Extrinsic::ResolveAfter(duration, res)) => {
+                        let tx = keypress_tx.clone();
+                        s.spawn(move || {
+                            thread::sleep(duration);
+                            tx.send(Err(res));
+                        });
+                    },
+                    None => {},
+                }
             }
         }
-    }
-    ratatui::restore();
-    Ok(vec![])
+        ratatui::restore();
+        Ok(vec![])
+    })
 }
 
 impl<'a> State<'a> {
-    fn handle_message(&mut self, message: Message) -> TaskitResult<Option<Extrinsic>> {
+    fn handle_message(&mut self, message: Message, tx: &mpsc::Sender<InquireRequest<'static, 'a, 'a>>, rx: &mpsc::Receiver<InquireResponse>) -> TaskitResult<Option<Extrinsic>> {
         match message {
             Message::Exit => return Ok(Some(Extrinsic::Halt)),
             Message::ScrollDown => self.scroll_position = self.scroll_position.saturating_add(3),
@@ -182,37 +270,41 @@ impl<'a> State<'a> {
                         match HEADER[self.header_highlight] {
                             HeaderButton::Filter(Filter::StartDate(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
-                                disable_raw_mode().with(Source::DrawingTui)?;
-                                let date = inquire::DateSelect::new("Start date filter:").prompt();
-                                enable_raw_mode().with(Source::DrawingTui)?;
-                                if let Ok(date) = date {
-                                    self.applied_filters.push(Filter::StartDate(date));
-                                }
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
+                                disable_raw_mode();
+                                tx.send(InquireRequest::DateSelect("Start date filter:")).expect("receiver will be active for duration of executions");
+                                let date = rx
+                                    .recv().expect("sender will be active for duration of execution")
+                                    .date().expect("requested a date").with(Source::SettingFilter)?;
+                                enable_raw_mode();
+                                self.applied_filters.push(Filter::StartDate(date));
                                 return Ok(Some(Extrinsic::ResetRatatui));
                             },
                             HeaderButton::Filter(Filter::EndDate(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
-                                disable_raw_mode().with(Source::DrawingTui)?;
-                                let date = inquire::DateSelect::new("Start date filter:").prompt();
-                                enable_raw_mode().with(Source::DrawingTui)?;
-                                if let Ok(date) = date {
-                                    self.applied_filters.push(Filter::EndDate(date));
-                                }
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
+                                disable_raw_mode();
+                                tx.send(InquireRequest::DateSelect("End date filter:")).expect("receiver will be active for duration of executions");
+                                let date = rx
+                                    .recv().expect("sender will be active for duration of execution")
+                                    .date().expect("requested a date").with(Source::SettingFilter)?;
+                                enable_raw_mode();
+                                self.applied_filters.push(Filter::EndDate(date));
                                 return Ok(Some(Extrinsic::ResetRatatui));
                             },
                             HeaderButton::Filter(Filter::Category(_)) => {
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
-                                disable_raw_mode().with(Source::DrawingTui)?;
-                                let category = inquire::Text::new("Select a category:")
-                                    .with_autocomplete(CategoriesPair(&self.categories, &self.archived_categories))
-                                    .with_validator(CategoriesPair(&self.categories, &self.archived_categories))
-                                    .prompt();
-                                enable_raw_mode().with(Source::DrawingTui)?;
-                                if let Ok(category) = category {
-                                    self.applied_filters.push(Filter::Category(category));
-                                }
+                                // temporarily breaking out of ratatui
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
+                                disable_raw_mode();
+                                tx.send(InquireRequest::CategoryFilter {
+                                    categories: self.categories, 
+                                    archived_categories: self.archived_categories,
+                                }).expect("receiver will be active for duration of execution");
+                                let category = rx
+                                    .recv().expect("sender will be active for duration of execution")
+                                    .category().expect("requested a category").with(Source::SettingFilter)?;
+                                enable_raw_mode();
+                                self.applied_filters.push(Filter::Category(category));
                                 return Ok(Some(Extrinsic::ResetRatatui));
                             },
                             HeaderButton::Filter(Filter::Description(_)) => self.editing_filter = Some(Filter::Description(String::new())),
@@ -222,11 +314,15 @@ impl<'a> State<'a> {
                     },
             Message::KeyTyped(c) => {
                 if let Some(Filter::Description(ref mut cat)) = self.editing_filter {
+                    self.last_cursor_show_time = Instant::now();
+                    self.cursor_blink = true;
                     cat.push(c);
                 }
             },
             Message::Backspace => {
                 if let Some(Filter::Description(ref mut cat)) = self.editing_filter {
+                    self.last_cursor_show_time = Instant::now();
+                    self.cursor_blink = true;
                     cat.pop();
                 }
             },
@@ -238,68 +334,81 @@ impl<'a> State<'a> {
             Message::CancelFilter => {
                 self.editing_filter = None;
             },
+            Message::BlinkCursor(real) => {
+                if real {
+                    self.cursor_blink = !self.cursor_blink;
+                }
+                return Ok(Some(Extrinsic::ResolveAfter(Duration::from_millis(500), Box::new(|state| {
+                        [Message::BlinkCursor(state.last_cursor_show_time.elapsed() > Duration::from_millis(500))].into()
+                }))))
+            }
         }
         Ok(None)
     }
 
-    fn handle_keypresses(&self, mut emit: impl FnMut(Message)) {
-        let event = event::read().expect("core assumption: terminal works");
+    /// blocks until a keypress is received or until a ResolveAfter extrinsic has resolved
+    /// returns a vector of messages based on (a) recent keypress and (b) finished ResolveAfters
+    fn generate_messages(&self, rx: &mpsc::Receiver<Result<CEvent, Box<dyn Send + FnOnce(&State) -> MessageVec>>>) -> MessageVec {
+        let event = rx.recv().unwrap();
         match event {
-            CEvent::Key(key_event)
+            Ok(CEvent::Key(key_event))
                 if key_event.is_press()
                 && key_event.code.is_char('c')
                 && key_event.modifiers == KeyModifiers::CONTROL
-                => emit(Message::Exit),
-            CEvent::Key(key_event) 
+                => [Message::Exit].into(),
+            Ok(CEvent::Key(key_event))
                 if key_event.is_press() 
                 && key_event.code.is_down() 
-                => emit(Message::ScrollDown),
-            CEvent::Key(key_event) 
+                => [Message::ScrollDown].into(),
+            Ok(CEvent::Key(key_event))
                 if key_event.is_press() 
                 && key_event.code.is_up() 
-                => emit(Message::ScrollUp),
-            _ => {
+                => [Message::ScrollUp].into(),
+            Ok(_) => {
                 if let Some(Filter::Description(_)) = self.editing_filter {
                     match event {
-                        CEvent::Key(key_event) 
+                        Ok(CEvent::Key(key_event) )
                         if key_event.is_press() 
                         && key_event.code.is_backspace()
-                        => emit(Message::Backspace),
-                        CEvent::Key(key_event)
+                        => [Message::Backspace].into(),
+                        Ok(CEvent::Key(key_event))
                         if key_event.is_press()
                         && key_event.code.is_enter() 
-                        => emit(Message::FinishFilter),
-                        CEvent::Key(key_event)
+                        => [Message::FinishFilter].into(),
+                        Ok(CEvent::Key(key_event))
                         if key_event.is_press()
                         && key_event.code.is_esc() 
-                        => emit(Message::CancelFilter),
-                        CEvent::Key(key_event) 
+                        => [Message::CancelFilter].into(),
+                        Ok(CEvent::Key(key_event))
                         if key_event.is_press() 
                         && key_event.code.as_char().is_some()
-                        => emit(Message::KeyTyped(key_event.code.as_char().expect("verified is_some() in condition"))),
-                        _ => {}
+                        => [Message::KeyTyped(key_event.code.as_char().expect("verified is_some() in condition"))].into(),
+                        _ => SmallVec::new()
                     }
                 } else {
                     match event {
-                        CEvent::Key(key_event)
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_char('q')
-                            => emit(Message::Exit),
-                        CEvent::Key(key_event)
+                            => [Message::Exit].into(),
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_left()
-                            => emit(Message::TabLeft),
-                        CEvent::Key(key_event)
+                            => [Message::TabLeft].into(),
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_right()
-                            => emit(Message::TabRight),
-                        CEvent::Key(key_event)
+                            => [Message::TabRight].into(),
+                        Ok(CEvent::Key(key_event))
                             if key_event.is_press()
                             && key_event.code.is_enter()
-                            => emit(Message::Enter),
-                        _ => {}
+                            => [Message::Enter].into(),
+                        _ => SmallVec::new()
                     }
                 }
+            }
+            Err(apply) => {
+                apply(self)
             }
         }
     }
@@ -355,7 +464,10 @@ impl<'a> State<'a> {
 
         let filters_lines: Vec<Line> = self.applied_filters.iter()
             .map(ToString::to_string)
-            .chain(self.editing_filter.iter().map(|f| format!("(*) {f}")))
+            .chain(self.editing_filter.iter().map(|f| {
+                let cursor = if self.cursor_blink {"\u{2588}"} else {""};
+                format!("(*) {f}{cursor}")
+            }))
             .map(Line::raw)
             .collect();
         let filters_widget = Paragraph::new(filters_lines)

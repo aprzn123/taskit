@@ -65,6 +65,7 @@ pub mod error {
         EditingNote,
         UpdatingCategory,
         DrawingTui,
+        SettingFilter,
     }
 
     pub type TaskitResult<T> = Result<T, TaskitError>;
@@ -83,6 +84,7 @@ pub mod error {
                 Source::EditingNote => "editing a daily note",
                 Source::UpdatingCategory => "updating a category",
                 Source::DrawingTui => "performing TUI operations",
+                Source::SettingFilter => "setting a filter",
             }
         }
     }
