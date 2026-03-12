@@ -236,17 +236,17 @@ pub fn filter_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         let mut halt = false;
         messages.push(Message::BlinkCursor(true));
         while !halt {
-            terminal.draw(|f| state.render(f)).unwrap();
+            terminal.draw(|f| state.render(f)).with(Source::DrawingTui)?;
             messages.extend(state.generate_messages(&keypress_rx));
             for message in mem::take(&mut messages).into_iter() {
                 match state.handle_message(message, &inquire_request_tx, &inquire_response_rx)? {
                     Some(Extrinsic::Halt) => {halt = true;},
-                    Some(Extrinsic::ResetRatatui) => {terminal.clear();},
+                    Some(Extrinsic::ResetRatatui) => {terminal.clear().with(Source::DrawingTui)?;},
                     Some(Extrinsic::ResolveAfter(duration, res)) => {
                         let tx = keypress_tx.clone();
                         s.spawn(move || {
                             thread::sleep(duration);
-                            tx.send(Err(res));
+                            tx.send(Err(res)).expect("we know this will succeed because keypress_rx lives past this point");
                         });
                     },
                     None => {},
@@ -270,32 +270,32 @@ impl<'a> State<'a> {
                         match HEADER[self.header_highlight] {
                             HeaderButton::Filter(Filter::StartDate(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
-                                disable_raw_mode();
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
+                                disable_raw_mode().with(Source::DrawingTui)?;
                                 tx.send(InquireRequest::DateSelect("Start date filter:")).expect("receiver will be active for duration of executions");
                                 let date = rx
                                     .recv().expect("sender will be active for duration of execution")
                                     .date().expect("requested a date").with(Source::SettingFilter)?;
-                                enable_raw_mode();
+                                enable_raw_mode().with(Source::DrawingTui)?;
                                 self.applied_filters.push(Filter::StartDate(date));
                                 return Ok(Some(Extrinsic::ResetRatatui));
                             },
                             HeaderButton::Filter(Filter::EndDate(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
-                                disable_raw_mode();
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
+                                disable_raw_mode().with(Source::DrawingTui)?;
                                 tx.send(InquireRequest::DateSelect("End date filter:")).expect("receiver will be active for duration of executions");
                                 let date = rx
                                     .recv().expect("sender will be active for duration of execution")
                                     .date().expect("requested a date").with(Source::SettingFilter)?;
-                                enable_raw_mode();
+                                enable_raw_mode().with(Source::DrawingTui)?;
                                 self.applied_filters.push(Filter::EndDate(date));
                                 return Ok(Some(Extrinsic::ResetRatatui));
                             },
                             HeaderButton::Filter(Filter::Category(_)) => {
                                 // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
-                                disable_raw_mode();
+                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
+                                disable_raw_mode().with(Source::DrawingTui)?;
                                 tx.send(InquireRequest::CategoryFilter {
                                     categories: self.categories, 
                                     archived_categories: self.archived_categories,
@@ -303,7 +303,7 @@ impl<'a> State<'a> {
                                 let category = rx
                                     .recv().expect("sender will be active for duration of execution")
                                     .category().expect("requested a category").with(Source::SettingFilter)?;
-                                enable_raw_mode();
+                                enable_raw_mode().with(Source::DrawingTui)?;
                                 self.applied_filters.push(Filter::Category(category));
                                 return Ok(Some(Extrinsic::ResetRatatui));
                             },
@@ -349,7 +349,7 @@ impl<'a> State<'a> {
     /// blocks until a keypress is received or until a ResolveAfter extrinsic has resolved
     /// returns a vector of messages based on (a) recent keypress and (b) finished ResolveAfters
     fn generate_messages(&self, rx: &mpsc::Receiver<Result<CEvent, Box<dyn Send + FnOnce(&State) -> MessageVec>>>) -> MessageVec {
-        let event = rx.recv().unwrap();
+        let event = rx.recv().expect("sender outlives all calls to this function");
         match event {
             Ok(CEvent::Key(key_event))
                 if key_event.is_press()
