@@ -1,6 +1,6 @@
 mod common;
 mod input;
-mod output;
+mod tui;
 
 use std::{
     fs::{File, create_dir_all, rename},
@@ -74,7 +74,7 @@ fn main() {
         CliSubcommands::Stopwatch => input::stopwatch_main(save_data),
         CliSubcommands::Amend { latest: true } => input::amend_main(save_data, 0),
         CliSubcommands::Amend { latest: false } => input::dispatch_amend(save_data),
-        CliSubcommands::Show => output::filter_main(save_data),
+        CliSubcommands::Show => tui::filter_main(save_data),
         CliSubcommands::Archive { category } => input::archive_main(save_data, category),
         CliSubcommands::Tag => input::tag_main(save_data),
         CliSubcommands::Note => input::note_main(save_data),

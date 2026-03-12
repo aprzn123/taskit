@@ -1,7 +1,8 @@
-use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::mpsc, thread, time::{Duration, Instant}};
+use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, mem, sync::mpsc::{self, RecvTimeoutError}, thread, time::{Duration, Instant}};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta};
 use crossterm::{cursor::MoveTo, event::{self, Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
+use inquire::error::InquireResult;
 use itertools::Itertools;
 use ratatui::{
     layout::{Constraint, Direction, Layout}, style::{Style, Stylize}, text::{Line, Span, Text}, widgets::{Block, Paragraph}, Frame
@@ -64,6 +65,32 @@ enum Filter {
     EndDate(NaiveDate),
     Category(String),
     Description(String),
+}
+
+enum InquireRequest<'a, 'b, 'c> {
+    DateSelect(&'a str),
+    CategoryFilter {categories: &'b Categories, archived_categories: &'c Categories},
+}
+
+enum InquireResponse {
+    Date(InquireResult<NaiveDate>),
+    Category(InquireResult<String>),
+}
+
+impl InquireResponse {
+    fn date(self) -> Option<InquireResult<NaiveDate>> {
+        match self {
+            Self::Date(d) => Some(d),
+            _ => None
+        }
+    }
+
+    fn category(self) -> Option<InquireResult<String>> {
+        match self {
+            Self::Category(c) => Some(c),
+            _ => None
+        }
+    }
 }
 
 impl From<FilterCategory> for usize {
@@ -146,71 +173,97 @@ fn duration_to_string(duration: &TimeDelta) -> String {
 }
 
 pub fn filter_main(save_data: SaveData) -> Vec<DeltaItem> {
-    let mut terminal = ratatui::init();
-    let mut messages: Vec<Message> = Vec::new();
-    let mut events = save_data.events.clone();
-    events.sort_by_key(|e| {
-        -NaiveDateTime::new(e.date, e.start_time.into())
-            .and_utc()
-            .timestamp()
-    });
-    let mut state = State {
-        categories: &save_data.categories,
-        archived_categories: &save_data.archived_categories,
-        events,
-        scroll_position: 0,
-        header_highlight: 0,
-        applied_filters: vec![],
-        editing_filter: None,
-        tags: &save_data.tags,
-        tag_map: &save_data.tag_map,
-        daily_notes: &save_data.daily_notes,
-        cursor_blink: true,
-        last_cursor_show_time: Instant::now(),
-    };
-    let (keypress_tx, keypress_rx) = mpsc::channel();
-    {
-        let tx = keypress_tx.clone();
-        thread::spawn(move || {
-            // TODO: somehow do this poll in the main thread*??? otherwise we're fucked and this
-            // design won't work at all
-            // *or bring inquire calls into this thread somehow
-
-            // can we alternate between listening for events and listening for "another thread
-            // requests to call inquire" effectively and performantly? - may be our only solution
-            loop {
-                let event = event::read().unwrap();
-                tx.send(Ok(event));
-            }
+    thread::scope(|s| {
+        let mut terminal = ratatui::init();
+        let mut messages: Vec<Message> = Vec::new();
+        let mut events = save_data.events.clone();
+        events.sort_by_key(|e| {
+            -NaiveDateTime::new(e.date, e.start_time.into())
+                .and_utc()
+                .timestamp()
         });
-    };
-    let mut halt = false;
-    messages.push(Message::BlinkCursor(true));
-    while !halt {
-        terminal.draw(|f| state.render(f)).unwrap();
-        messages.extend(state.handle_keypresses(&keypress_rx));
-        for message in mem::take(&mut messages).into_iter() {
-            match state.handle_message(message) {
-                Some(Extrinsic::Halt) => {halt = true;},
-                Some(Extrinsic::ResetRatatui) => {terminal.clear();},
-                Some(Extrinsic::ResolveAfter(duration, res)) => {
-                    let tx = keypress_tx.clone();
-                    thread::spawn(move || {
-                        thread::sleep(duration);
-                        tx.send(Err(res));
-                    });
-                },
-                None => {},
+        let mut state = State {
+            categories: &save_data.categories,
+            archived_categories: &save_data.archived_categories,
+            events,
+            scroll_position: 0,
+            header_highlight: 0,
+            applied_filters: vec![],
+            editing_filter: None,
+            tags: &save_data.tags,
+            tag_map: &save_data.tag_map,
+            daily_notes: &save_data.daily_notes,
+            cursor_blink: true,
+            last_cursor_show_time: Instant::now(),
+        };
+        let (keypress_tx, keypress_rx) = mpsc::channel();
+        let (inquire_request_tx, inquire_request_rx) = mpsc::channel::<InquireRequest>();
+        let (inquire_response_tx, inquire_response_rx) = mpsc::channel::<InquireResponse>();
+        {
+            let tx = keypress_tx.clone();
+            let inquire_rx = inquire_request_rx;
+            let inquire_tx = inquire_response_tx;
+            s.spawn(move || {
+                loop {
+                    let event_available = event::poll(Duration::from_millis(50)).expect("assume that terminal works");
+                    if event_available {
+                        let event = event::read().expect("just polled that one is real");
+                        if let Err(_) = tx.send(Ok(event)) { return };
+                    }
+                    let request = match inquire_rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(r) => Some(r),
+                        Err(RecvTimeoutError::Timeout) => None,
+                        Err(_) => return,
+                    };
+                    if let Some(request) = request {
+                        let response = match request {
+                            InquireRequest::DateSelect(s) => InquireResponse::Date(inquire::DateSelect::new(s).prompt()),
+
+                            InquireRequest::CategoryFilter { categories, archived_categories } => InquireResponse::Category(
+                                inquire::Text::new("Select a category:")
+                                .with_autocomplete(CategoriesPair(categories, archived_categories))
+                                .with_validator(CategoriesPair(categories, archived_categories))
+                                .prompt()
+                            ),
+                        };
+                        if let Err(_) = inquire_tx.send(response) {
+                            return;
+                        }
+                    }
+                }
+            });
+        };
+        let mut halt = false;
+        messages.push(Message::BlinkCursor(true));
+        while !halt {
+            terminal.draw(|f| state.render(f)).unwrap();
+            messages.extend(state.generate_messages(&keypress_rx));
+            for message in mem::take(&mut messages).into_iter() {
+                match state.handle_message(message, &inquire_request_tx, &inquire_response_rx) {
+                    Some(Extrinsic::Halt) => {halt = true;},
+                    Some(Extrinsic::ResetRatatui) => {terminal.clear();},
+                    Some(Extrinsic::ResolveAfter(duration, res)) => {
+                        let tx = keypress_tx.clone();
+                        s.spawn(move || {
+                            thread::sleep(duration);
+                            tx.send(Err(res));
+                        });
+                    },
+                    None => {},
+                }
             }
         }
-    }
-    ratatui::restore();
-    vec![]
+        ratatui::restore();
+        mem::drop(inquire_request_tx);
+        mem::drop(inquire_response_rx);
+        mem::drop(keypress_rx);
+        vec![]
+    })
 }
 
 impl<'a> State<'a> {
     // returns true to halt program, false otherwise
-    fn handle_message(&mut self, message: Message) -> Option<Extrinsic> {
+    fn handle_message(&mut self, message: Message, tx: &mpsc::Sender<InquireRequest<'static, 'a, 'a>>, rx: &mpsc::Receiver<InquireResponse>) -> Option<Extrinsic> {
         match message {
             Message::Exit => return Some(Extrinsic::Halt),
             Message::ScrollDown => self.scroll_position = self.scroll_position.saturating_add(3),
@@ -223,7 +276,11 @@ impl<'a> State<'a> {
                                 // temporarily breaking out of ratatui
                                 execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
                                 disable_raw_mode();
-                                let date = inquire::DateSelect::new("Start date filter:").prompt().unwrap();
+                                tx.send(InquireRequest::DateSelect("Start date filter:")).expect("receiver will be active for duration of executions");
+                                let date = rx
+                                    .recv().expect("sender will be active for duration of execution")
+                                    .date().expect("requested a date")
+                                    .expect("this one should really just propagate like other InquireResults");
                                 enable_raw_mode();
                                 self.applied_filters.push(Filter::StartDate(date));
                                 return Some(Extrinsic::ResetRatatui);
@@ -232,7 +289,11 @@ impl<'a> State<'a> {
                                 // temporarily breaking out of ratatui
                                 execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
                                 disable_raw_mode();
-                                let date = inquire::DateSelect::new("Start date filter:").prompt().unwrap();
+                                tx.send(InquireRequest::DateSelect("End date filter:")).expect("receiver will be active for duration of executions");
+                                let date = rx
+                                    .recv().expect("sender will be active for duration of execution")
+                                    .date().expect("requested a date")
+                                    .expect("this one should really just propagate like other InquireResults");
                                 enable_raw_mode();
                                 self.applied_filters.push(Filter::EndDate(date));
                                 return Some(Extrinsic::ResetRatatui);
@@ -241,11 +302,14 @@ impl<'a> State<'a> {
                                 // temporarily breaking out of ratatui
                                 execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0));
                                 disable_raw_mode();
-                                let category = inquire::Text::new("Select a category:")
-                                    .with_autocomplete(CategoriesPair(&self.categories, &self.archived_categories))
-                                    .with_validator(CategoriesPair(&self.categories, &self.archived_categories))
-                                    .prompt()
-                                    .unwrap();
+                                tx.send(InquireRequest::CategoryFilter {
+                                    categories: self.categories, 
+                                    archived_categories: self.archived_categories,
+                                }).expect("receiver will be active for duration of execution");
+                                let category = rx
+                                    .recv().expect("sender will be active for duration of execution")
+                                    .category().expect("requested a category")
+                                    .expect("this one should really just propagate like other InquireResults");
                                 enable_raw_mode();
                                 self.applied_filters.push(Filter::Category(category));
                                 return Some(Extrinsic::ResetRatatui);
@@ -288,7 +352,8 @@ impl<'a> State<'a> {
     }
 
     /// blocks until a keypress is received or until a ResolveAfter extrinsic has resolved
-    fn handle_keypresses(&self, rx: &mpsc::Receiver<Result<CEvent, Box<dyn Send + FnOnce(&State) -> MessageVec>>>) -> MessageVec {
+    /// returns a vector of messages based on (a) recent keypress and (b) finished ResolveAfters
+    fn generate_messages(&self, rx: &mpsc::Receiver<Result<CEvent, Box<dyn Send + FnOnce(&State) -> MessageVec>>>) -> MessageVec {
         let event = rx.recv().unwrap();
         match event {
             Ok(CEvent::Key(key_event))
