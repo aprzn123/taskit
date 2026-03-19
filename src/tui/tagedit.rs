@@ -70,12 +70,6 @@ impl framework::Message for Message {
 }
 
 impl<'a> State<'a> {
-    fn focused_list_state(&self) -> &ListState {
-        match self.column {
-            Column::Left => &self.left_list_state,
-            Column::Right => &self.right_list_state,
-        }
-    }
     fn focused_list_state_mut(&mut self) -> &mut ListState {
         match self.column {
             Column::Left => &mut self.left_list_state,
@@ -118,7 +112,7 @@ impl<'a> TuiState for State<'a> {
     type Response = ();
     type Output = Vec<DeltaItem>;
 
-    fn handle_message(&mut self, message: Self::Message, external_function: &framework::sync::ExternalFunction<Self::Call, Self::Response>) -> TaskitResult<Option<framework::Extrinsic<Self>>> {
+    fn handle_message(&mut self, message: Self::Message, _: &framework::sync::ExternalFunction<Self::Call, Self::Response>) -> TaskitResult<Option<framework::Extrinsic<Self>>> {
         match message {
             Message::Exit => return Ok(Some(Extrinsic::Halt)),
             Message::Right => self.column = Column::Right,
@@ -219,7 +213,7 @@ impl<'a> TuiState for State<'a> {
         );
     }
 
-    fn external_function(req: Self::Call) -> Self::Response {
+    fn external_function(_: Self::Call) -> Self::Response {
         ()
     }
 
