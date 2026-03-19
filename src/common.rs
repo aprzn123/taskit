@@ -20,6 +20,7 @@ pub struct SimpleTime {
 }
 
 /// One change in the save file.
+#[derive(Debug)]
 pub enum DeltaItem {
     AddCategory(String),
     RenameCategory { old: String, new: String },
@@ -27,7 +28,10 @@ pub enum DeltaItem {
     AddEvent(Event),
     ChangeEvent { index: usize, new_event: Event },
     AddTag(String),
+    /// category, tag
     TagCategory(String, String),
+    /// category, tag
+    UntagCategory(String, String),
     SetDailyNote(NaiveDate, String),
     DeleteEvent(usize),
     /// Assumes category is already archived
@@ -223,39 +227,42 @@ impl Apply<DeltaItem> for SaveData {
     fn apply(&mut self, delta: DeltaItem) -> TaskitResult<()> {
         match delta {
             DeltaItem::AddCategory(category) => {
-                                                if !self.categories.options.contains(&category) {
-                                                    self.categories.options.push(category);
-                                                }
-                                            }
+                                                        if !self.categories.options.contains(&category) {
+                                                            self.categories.options.push(category);
+                                                        }
+                                                    }
             DeltaItem::RenameCategory { old, new } => {
-                        self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                        self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                        self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
-                        self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
-                    },
+                                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                                self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
+                                self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
+                            },
             DeltaItem::AddEvent(event) => self.events.push(event),
             DeltaItem::ChangeEvent { index, new_event } => self.events[index] = new_event,
             DeltaItem::ArchiveCategory(category) => {
-                                        self.tag_map.remove(&category);
-                                        self.categories.options.retain(|x| *x != category);
-                                        self.archived_categories.options.push(category);
-                                    },
+                                                self.tag_map.remove(&category);
+                                                self.categories.options.retain(|x| *x != category);
+                                                self.archived_categories.options.push(category);
+                                            },
             DeltaItem::AddTag(tag) => if !self.tags.contains(&tag) { self.tags.push(tag); },
             DeltaItem::TagCategory(category, tag) => {
-                                if !self.tag_map.contains_key(&category) {
-                                    self.tag_map.insert(category.clone(), vec![]);
-                                }
-                                if !self.tag_map[&category].contains(&tag) {
-                                    if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
-                                } 
-                            },
+                                        if !self.tag_map.contains_key(&category) {
+                                            self.tag_map.insert(category.clone(), vec![]);
+                                        }
+                                        if !self.tag_map[&category].contains(&tag) {
+                                            if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
+                                        } 
+                                    },
             DeltaItem::SetDailyNote(date, note) => {self.daily_notes.insert(date, note);},
             DeltaItem::DeleteEvent(index) => {self.events.remove(index);},
             DeltaItem::DeleteCategory(c) => self.archived_categories.options.retain(|x| x != &c),
             DeltaItem::DeleteTag(t) => {
-                self.tags.retain(|x| x != &t);
-                self.tag_map.iter_mut().for_each(|(_, v)| v.retain(|x| x != &t));
-                self.events.iter_mut().for_each(|ev| ev.tags.retain(|x| x != &t));
+                        self.tags.retain(|x| x != &t);
+                        self.tag_map.iter_mut().for_each(|(_, v)| v.retain(|x| x != &t));
+                        self.events.iter_mut().for_each(|ev| ev.tags.retain(|x| x != &t));
+                    },
+            DeltaItem::UntagCategory(category, tag) => {
+                self.tag_map.get_mut(&category).map(|tags| tags.retain(|t| t != &tag));
             },
         }
         Ok(())

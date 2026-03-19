@@ -49,6 +49,8 @@ enum CliSubcommands {
     DeleteCategory,
     /// Delete any tag
     DeleteTag,
+    /// Open a TUI to view and edit associations between categories and tags
+    ManageTags,
 }
 
 fn main() -> ExitCode {
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
         CliSubcommands::DeleteEvent => input::delete_event_main(save_data),
         CliSubcommands::DeleteCategory => input::delete_category_main(save_data),
         CliSubcommands::DeleteTag => input::delete_tag_main(save_data),
+        CliSubcommands::ManageTags => tui::tagedit_main(save_data),
     };
     let save_delta = match save_delta {
         Ok(d) => d,
