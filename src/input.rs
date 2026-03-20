@@ -55,6 +55,9 @@ fn get_description_tags(description: &str) -> Vec<String> {
 fn validate_description_tags(tags: &[String], valid_tags: &[String]) -> TaskitResult<Vec<DeltaItem>> {
     let mut out = vec![];
     for tag in tags.iter().filter(|tag| !valid_tags.contains(tag)) {
+        if tag.contains(' ') {
+            return Err(Kind::NoSpaceInTag.with(Source::CreatingTag));
+        }
         let create = Confirm::new(&format!(
                 "Tag #{tag} does not currently exist. Create it?"
             ))

@@ -58,6 +58,7 @@ pub mod error {
         DuplicateCategory(String),
         CategoryNotEmpty(String),
         Other(Box<dyn Error>),
+        NoSpaceInTag,
     }
 
     /// Used in TaskitError for "error occurred while attempting to [...]"
@@ -114,6 +115,7 @@ pub mod error {
                 Kind::NoSuchCategory(c) => write!(f, "While {activity}, tried to use category '{c}', which doesn't exist."),
                 Kind::DuplicateCategory(c) => write!(f, "While {activity}, tried to create category '{c}', which already exists."),
                 Kind::CategoryNotEmpty(c) => write!(f, "Category {c} was not empty while {activity}."),
+                Kind::NoSpaceInTag => write!(f, "Spaces aren't allowed in tags. Occurred while {activity}."),
                 Kind::Other(error) => write!(f, "An external error occurred while {activity}: {error}"),
             }
         }
@@ -227,42 +229,62 @@ impl Apply<DeltaItem> for SaveData {
     fn apply(&mut self, delta: DeltaItem) -> TaskitResult<()> {
         match delta {
             DeltaItem::AddCategory(category) => {
-                                                        if !self.categories.options.contains(&category) {
-                                                            self.categories.options.push(category);
-                                                        }
-                                                    }
+                assert!(self.categories.options.contains(&category));
+                self.categories.options.push(category);
+            }
             DeltaItem::RenameCategory { old, new } => {
-                                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                                self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
-                                self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
-                            },
-            DeltaItem::AddEvent(event) => self.events.push(event),
-            DeltaItem::ChangeEvent { index, new_event } => self.events[index] = new_event,
+                assert!((self.categories.options.contains(&old) && !self.categories.options.contains(&new))
+                    || (self.archived_categories.options.contains(&old) && !self.archived_categories.options.contains(&new)));
+                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
+                self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
+            },
+            DeltaItem::AddEvent(event) => {
+                assert!(self.categories.options.contains(&event.category));
+                assert!(event.tags.iter().all(|tag| self.tags.contains(tag)));
+                self.events.push(event);
+            },
+            DeltaItem::ChangeEvent { index, new_event } => {
+                assert!(index < self.events.len());
+                self.events[index] = new_event;
+            },
             DeltaItem::ArchiveCategory(category) => {
+                                                assert!(self.categories.options.contains(&category));
+                                                assert!(!self.archived_categories.options.contains(&category));
                                                 self.tag_map.remove(&category);
                                                 self.categories.options.retain(|x| *x != category);
                                                 self.archived_categories.options.push(category);
                                             },
-            DeltaItem::AddTag(tag) => if !self.tags.contains(&tag) { self.tags.push(tag); },
+            DeltaItem::AddTag(tag) => if !self.tags.contains(&tag) {
+                assert!(!tag.contains(' '));
+                assert!(!self.tags.contains(&tag));
+                self.tags.push(tag);
+            },
             DeltaItem::TagCategory(category, tag) => {
-                                        if !self.tag_map.contains_key(&category) {
-                                            self.tag_map.insert(category.clone(), vec![]);
-                                        }
-                                        if !self.tag_map[&category].contains(&tag) {
-                                            if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
-                                        } 
-                                    },
-            DeltaItem::SetDailyNote(date, note) => {self.daily_notes.insert(date, note);},
-            DeltaItem::DeleteEvent(index) => {self.events.remove(index);},
-            DeltaItem::DeleteCategory(c) => self.archived_categories.options.retain(|x| x != &c),
-            DeltaItem::DeleteTag(t) => {
-                        self.tags.retain(|x| x != &t);
-                        self.tag_map.iter_mut().for_each(|(_, v)| v.retain(|x| x != &t));
-                        self.events.iter_mut().for_each(|ev| ev.tags.retain(|x| x != &t));
-                    },
+                if !self.tag_map.contains_key(&category) {
+                    self.tag_map.insert(category.clone(), vec![]);
+                }
+                if !self.tag_map[&category].contains(&tag) {
+                    if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
+                } 
+            },
             DeltaItem::UntagCategory(category, tag) => {
                 self.tag_map.get_mut(&category).map(|tags| tags.retain(|t| t != &tag));
+            },
+            DeltaItem::SetDailyNote(date, note) => {
+                self.daily_notes.insert(date, note);
+            },
+            DeltaItem::DeleteEvent(index) => {
+                assert!(self.events.len() > index);
+                self.events.remove(index);
+            },
+            DeltaItem::DeleteCategory(c) => self.archived_categories.options.retain(|x| x != &c),
+            DeltaItem::DeleteTag(t) => {
+                assert!(self.tags.contains(&t));
+                self.tags.retain(|x| x != &t);
+                self.tag_map.iter_mut().for_each(|(_, v)| v.retain(|x| x != &t));
+                self.events.iter_mut().for_each(|ev| ev.tags.retain(|x| x != &t));
             },
         }
         Ok(())
