@@ -15,8 +15,8 @@ struct DescriptionTagsAutocomplete<'a>(&'a [String]);
 
 impl<'a> Autocomplete for DescriptionTagsAutocomplete<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let partial_tag = input.split(' ').last()
-            .and_then(|s| if s.starts_with('#') {Some( &s[1..]) } else { None });
+        let partial_tag = input.split(' ').next_back()
+            .and_then(|s| s.strip_prefix('#'));
         if let Some(partial_tag) = partial_tag {
             Ok(self.0.iter().filter(|tag| tag.starts_with(partial_tag)).map(|s| { 
                 let mut out = String::from('#'); 
@@ -275,7 +275,7 @@ pub fn tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .with_autocomplete(TagCompleter(&save_data.tags))
         .prompt()
         .with(Source::UpdatingTag)?;
-    let tag = if tag.starts_with('#') { tag[1..].to_owned() } else { tag };
+    let tag = if let Some(stripped) = tag.strip_prefix('#') { stripped.to_owned() } else { tag };
     if !save_data.tags.contains(&tag) {
         let create = Confirm::new(&format!(
                 "Tag #{tag} does not currently exist. Create it?"
@@ -320,7 +320,7 @@ pub fn delete_category_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>>
         .with_validator(CategoriesPair(&save_data.categories, &save_data.archived_categories))
         .prompt()
         .with(Source::DeletingCategory)?;
-    if save_data.events.iter().find(|ev| ev.category == category).is_some() {
+    if save_data.events.iter().any(|ev| ev.category == category) {
         return Err(Kind::CategoryNotEmpty(category.clone()).with(Source::DeletingCategory));
     }
     if !Confirm::new(&format!("Are you sure you want to delete category {category}? [y/n]")).prompt().with(Source::DeletingCategory)? {
@@ -339,7 +339,7 @@ pub fn delete_tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .with_validator(TagCompleter(save_data.tags.as_ref()))
         .prompt()
         .with(Source::DeletingTag)?;
-    let tag = if tag.starts_with('#') { tag[1..].to_owned() } else { tag };
+    let tag = if let Some(stripped) = tag.strip_prefix('#') { stripped.to_owned() } else { tag };
     if !Confirm::new(&format!("Are you sure you want to delete tag #{tag}? [y/n]")).prompt().with(Source::DeletingTag)? {
         return Err(Kind::Cancelled.with(Source::DeletingTag));
     }

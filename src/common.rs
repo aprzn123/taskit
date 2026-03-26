@@ -235,8 +235,12 @@ impl Apply<DeltaItem> for SaveData {
             DeltaItem::RenameCategory { old, new } => {
                 assert!((self.categories.options.contains(&old) && !self.categories.options.contains(&new))
                     || (self.archived_categories.options.contains(&old) && !self.archived_categories.options.contains(&new)));
-                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
+                if let Some(c) = self.categories.options.iter_mut().find(|c| c == &&old) {
+                    *c = new.clone();
+                }
+                if let Some(c) = self.archived_categories.options.iter_mut().find(|c| c == &&old) {
+                    *c = new.clone();
+                }
                 self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
                 self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
             },
@@ -265,12 +269,14 @@ impl Apply<DeltaItem> for SaveData {
                 if !self.tag_map.contains_key(&category) {
                     self.tag_map.insert(category.clone(), vec![]);
                 }
-                if !self.tag_map[&category].contains(&tag) {
-                    if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
-                } 
+                if !self.tag_map[&category].contains(&tag) && let Some(tags) = self.tag_map.get_mut(&category) {
+                    tags.push(tag); 
+                }
             },
             DeltaItem::UntagCategory(category, tag) => {
-                self.tag_map.get_mut(&category).map(|tags| tags.retain(|t| t != &tag));
+                if let Some(tags) = self.tag_map.get_mut(&category) {
+                    tags.retain(|t| t != &tag);
+                }
             },
             DeltaItem::SetDailyNote(date, note) => {
                 self.daily_notes.insert(date, note);
@@ -348,7 +354,7 @@ impl Autocomplete for &Categories {
 
 impl<'a> Autocomplete for TagCompleter<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let input = if input.starts_with('#') { &input[1..] } else { input };
+        let input = input.strip_prefix('#').unwrap_or(input);
         Ok(self
             .0
             .iter()
@@ -372,7 +378,7 @@ impl<'a> Autocomplete for TagCompleter<'a> {
 
 impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
     fn validate(&self, input: &str) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
-        if self.0.options.iter().chain(self.1.options.iter()).find(|cat| cat.as_str() == input).is_some() {
+        if self.0.options.iter().chain(self.1.options.iter()).any(|cat| cat.as_str() == input) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
@@ -392,7 +398,7 @@ impl StringValidator for &Categories {
 
 impl<'a> StringValidator for TagCompleter<'a> {
     fn validate(&self, input: &str) -> Result<Validation, inquire::CustomUserError> {
-        let tag = if input.starts_with('#') { &input[1..] } else { input };
+        let tag = input.strip_prefix('#').unwrap_or(input);
         if self.0.contains(&tag.to_owned()) {
             Ok(Validation::Valid)
         } else {
@@ -434,7 +440,7 @@ impl Sub for SimpleTime {
         if minutes < 0 {
             minutes += 60 * 24;
         }
-        return TimeDelta::minutes(minutes);
+        TimeDelta::minutes(minutes)
     }
 }
 
@@ -452,7 +458,7 @@ trait Upgrade {
 //   - Update Default impl
 //   - Update SaveData type alias
 //   - Update line 1 of SaveDataVersioned::extract
-//   - Update as_latest, outdated, upgrade_once
+//   - Update assert_latest, outdated, upgrade_once
 //   - impl From for new version
 //   - impl Upgrade for previous version
 //   - if Event is updated, update its Display impl
@@ -540,12 +546,12 @@ impl SaveDataVersioned {
             while self.outdated() {
                 self = self.upgrade_once();
             }
-            // panic safety: as_latest only panics if self.outdated(), which is guaranteed false
-            (self.as_latest(), true)
+            // panic safety: assert_latest only panics if self.outdated(), which is guaranteed false
+            (self.assert_latest(), true)
         }
     }
 
-    fn as_latest(self) -> SaveData {
+    fn assert_latest(self) -> SaveData {
         match self {
             Self::V6(data) => data,
             _ => panic!()
@@ -553,7 +559,7 @@ impl SaveDataVersioned {
     }
 
     fn outdated(&self) -> bool {
-        if let Self::V6(_) = self { false } else { true }
+        !matches!(self, Self::V6(_))
     }
 
     fn upgrade_once(self) -> Self {
@@ -664,7 +670,7 @@ impl Upgrade for SaveDataV4 {
                         tags: comments
                             .split(' ')
                             .filter(|s| s.starts_with('#'))
-                            .filter(|s| tags.iter().find(|tag| tag.as_str() == &s[1..]).is_some())
+                            .filter(|s| tags.iter().any(|tag| tag.as_str() == &s[1..]))
                             .map(|s| s[1..].to_owned())
                             .collect()
                     }

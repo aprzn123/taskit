@@ -36,7 +36,6 @@ pub mod sync {
 
     impl<T: Send, U: Send, F: Fn(T) -> U> ExternalFunctionListener<T, U, F> {
         /// Returns Err iff ExternalFunction has hung up
-        #[must_use]
         pub fn listen_once_timeout(&self, d: Duration) -> Result<(), ()> {
             let input = match self.recv.recv_timeout(d) {
                 Ok(i) => i,
@@ -50,12 +49,21 @@ pub mod sync {
     }
 }
 
+type MVec<M> = SmallVec<[M; 1]>;
+
 /// Messages to trigger events that can't be contained to the update function
 pub enum Extrinsic<S: TuiState> {
     Halt,
     /// for after we temporarily break out of the ratatui environment
     ResetRatatui,
-    ResolveAfter(Duration, Box<dyn Send + FnOnce(&S) -> SmallVec<[S::Message; 1]>>),
+    #[allow(clippy::type_complexity)]
+    ResolveAfter(Duration, Box<dyn Send + FnOnce(&S) -> MVec<S::Message>>),
+}
+
+enum Input<S: TuiState> {
+    Terminal(CEvent),
+    #[allow(clippy::type_complexity)]
+    Producer(Box<dyn Send + FnOnce(&S) -> MVec<S::Message>>),
 }
 
 pub trait Message: Sized {
@@ -70,23 +78,12 @@ pub trait TuiState: Sized {
     type Response: Send;
     type Output;
 
-    // type MessageVec = SmallVec<[Self::Message; 1]>;
-
     fn handle_message(&mut self, message: Self::Message, external_function: &sync::ExternalFunction<Self::Call, Self::Response>) -> TaskitResult<Option<Extrinsic<Self>>>;
-    fn handle_keypresses(&self, event: CEvent) -> SmallVec<[Self::Message; 1]>;
+    fn handle_keypresses(&self, event: CEvent) -> MVec<Self::Message>;
     fn render(&mut self, frame: &mut Frame);
     fn external_function(req: Self::Call) -> Self::Response;
     fn get_output(self) -> Self::Output;
 
-    fn generate_messages(&self, event: Result<CEvent, Box<dyn Send + FnOnce(&Self) -> SmallVec<[Self::Message; 1]>>>) -> SmallVec<[Self::Message; 1]> {
-        match event {
-            Ok(ev) => self.handle_keypresses(ev),
-            Err(f) => f(self),
-        }
-
-    }
-
-    #[must_use]
     fn run(mut self) -> TaskitResult<Self::Output> {
         let mut terminal = ratatui::init();
 
@@ -107,7 +104,7 @@ pub trait TuiState: Sized {
                         let event_available = event::poll(Duration::from_millis(50)).expect("assume that terminal works");
                         if event_available {
                             let event = event::read().expect("just polled that one is real");
-                            if let Err(_) = tx.send(Ok(event)) { return };
+                            if tx.send(Input::Terminal(event)).is_err() { return };
                         }
                         if inquire_listener.listen_once_timeout(Duration::from_millis(50)).is_err() {
                             return;
@@ -116,11 +113,16 @@ pub trait TuiState: Sized {
                 });
             };
             let mut halt = false;
-            Self::Message::init().map(|m| messages.push(m));
+            if let Some(m) = Self::Message::init() {
+                messages.push(m);
+            }
             while !halt {
                 terminal.draw(|f| self.render(f)).with(Source::DrawingTui)?;
                 let event = keypress_rx.recv().expect("sender outlives all calls to this function");
-                messages.extend(self.generate_messages(event));
+                messages.extend(match event {
+                    Input::Terminal(ev) => self.handle_keypresses(ev),
+                    Input::Producer(f) => f(&self),
+                });
                 for message in mem::take(&mut messages).into_iter() {
                     match self.handle_message(message, &inquire_function)? {
                         Some(Extrinsic::Halt) => {halt = true;},
@@ -129,7 +131,7 @@ pub trait TuiState: Sized {
                             let tx = keypress_tx.clone();
                             s.spawn(move || {
                                 thread::sleep(duration);
-                                let _ = tx.send(Err(res));
+                                let _ = tx.send(Input::Producer(res));
                             });
                         },
                         None => {},
