@@ -1,5 +1,11 @@
+pub mod error;
+mod invariants;
+
 use chrono::{NaiveDate, TimeDelta, Timelike};
-use inquire::{Autocomplete, validator::{ErrorMessage, StringValidator, Validation}};
+use inquire::{
+    Autocomplete,
+    validator::{ErrorMessage, StringValidator, Validation},
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display, ops::Sub, str::FromStr};
 
@@ -23,10 +29,16 @@ pub struct SimpleTime {
 #[derive(Debug)]
 pub enum DeltaItem {
     AddCategory(String),
-    RenameCategory { old: String, new: String },
+    RenameCategory {
+        old: String,
+        new: String,
+    },
     ArchiveCategory(String),
     AddEvent(Event),
-    ChangeEvent { index: usize, new_event: Event },
+    ChangeEvent {
+        index: usize,
+        new_event: Event,
+    },
     AddTag(String),
     /// category, tag
     TagCategory(String, String),
@@ -38,8 +50,6 @@ pub enum DeltaItem {
     DeleteCategory(String),
     DeleteTag(String),
 }
-
-pub mod error;
 
 #[derive(Clone)]
 pub struct TagCompleter<'a>(pub &'a [String]);
@@ -91,59 +101,87 @@ impl Apply<DeltaItem> for SaveData {
                 self.categories.options.push(category);
             }
             DeltaItem::RenameCategory { old, new } => {
-                assert!((self.categories.options.contains(&old) && !self.categories.options.contains(&new))
-                    || (self.archived_categories.options.contains(&old) && !self.archived_categories.options.contains(&new)));
-                self.categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                self.archived_categories.options.iter_mut().find(|c| c == &&old).map(|c| *c = new.clone());
-                self.events.iter_mut().for_each(|ev| {if ev.category == old {ev.category = new.clone();}});
-                self.tag_map.remove(&old).and_then(|v| self.tag_map.insert(new, v));
-            },
+                assert!(
+                    (self.categories.options.contains(&old)
+                        && !self.categories.options.contains(&new))
+                        || (self.archived_categories.options.contains(&old)
+                            && !self.archived_categories.options.contains(&new))
+                );
+                self.categories
+                    .options
+                    .iter_mut()
+                    .find(|c| c == &&old)
+                    .map(|c| *c = new.clone());
+                self.archived_categories
+                    .options
+                    .iter_mut()
+                    .find(|c| c == &&old)
+                    .map(|c| *c = new.clone());
+                self.events.iter_mut().for_each(|ev| {
+                    if ev.category == old {
+                        ev.category = new.clone();
+                    }
+                });
+                self.tag_map
+                    .remove(&old)
+                    .and_then(|v| self.tag_map.insert(new, v));
+            }
             DeltaItem::AddEvent(event) => {
                 assert!(self.categories.options.contains(&event.category));
                 assert!(event.tags.iter().all(|tag| self.tags.contains(tag)));
                 self.events.push(event);
-            },
+            }
             DeltaItem::ChangeEvent { index, new_event } => {
                 assert!(index < self.events.len());
                 self.events[index] = new_event;
-            },
+            }
             DeltaItem::ArchiveCategory(category) => {
-                                                assert!(self.categories.options.contains(&category));
-                                                assert!(!self.archived_categories.options.contains(&category));
-                                                self.tag_map.remove(&category);
-                                                self.categories.options.retain(|x| *x != category);
-                                                self.archived_categories.options.push(category);
-                                            },
-            DeltaItem::AddTag(tag) => if !self.tags.contains(&tag) {
-                assert!(!tag.contains(' '));
-                assert!(!self.tags.contains(&tag));
-                self.tags.push(tag);
-            },
+                assert!(self.categories.options.contains(&category));
+                assert!(!self.archived_categories.options.contains(&category));
+                self.tag_map.remove(&category);
+                self.categories.options.retain(|x| *x != category);
+                self.archived_categories.options.push(category);
+            }
+            DeltaItem::AddTag(tag) => {
+                if !self.tags.contains(&tag) {
+                    assert!(!tag.contains(' '));
+                    assert!(!self.tags.contains(&tag));
+                    self.tags.push(tag);
+                }
+            }
             DeltaItem::TagCategory(category, tag) => {
                 if !self.tag_map.contains_key(&category) {
                     self.tag_map.insert(category.clone(), vec![]);
                 }
                 if !self.tag_map[&category].contains(&tag) {
-                    if let Some(tags) = self.tag_map.get_mut(&category) { tags.push(tag); }
-                } 
-            },
+                    if let Some(tags) = self.tag_map.get_mut(&category) {
+                        tags.push(tag);
+                    }
+                }
+            }
             DeltaItem::UntagCategory(category, tag) => {
-                self.tag_map.get_mut(&category).map(|tags| tags.retain(|t| t != &tag));
-            },
+                self.tag_map
+                    .get_mut(&category)
+                    .map(|tags| tags.retain(|t| t != &tag));
+            }
             DeltaItem::SetDailyNote(date, note) => {
                 self.daily_notes.insert(date, note);
-            },
+            }
             DeltaItem::DeleteEvent(index) => {
                 assert!(self.events.len() > index);
                 self.events.remove(index);
-            },
+            }
             DeltaItem::DeleteCategory(c) => self.archived_categories.options.retain(|x| x != &c),
             DeltaItem::DeleteTag(t) => {
                 assert!(self.tags.contains(&t));
                 self.tags.retain(|x| x != &t);
-                self.tag_map.iter_mut().for_each(|(_, v)| v.retain(|x| x != &t));
-                self.events.iter_mut().for_each(|ev| ev.tags.retain(|x| x != &t));
-            },
+                self.tag_map
+                    .iter_mut()
+                    .for_each(|(_, v)| v.retain(|x| x != &t));
+                self.events
+                    .iter_mut()
+                    .for_each(|ev| ev.tags.retain(|x| x != &t));
+            }
         }
         Ok(())
     }
@@ -160,20 +198,20 @@ impl Apply<Vec<DeltaItem>> for SaveData {
 
 impl<'a, 'b> Autocomplete for CategoriesPair<'a, 'b> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        Ok(self.0
+        Ok(self
+            .0
             .options
             .iter()
             .chain(self.1.options.iter())
             .filter(|s| s.starts_with(input))
             .cloned()
-            .collect()
-        )
+            .collect())
     }
 
     fn get_completion(
         &mut self,
         input: &str,
-        highlighted_suggestion: Option<String>
+        highlighted_suggestion: Option<String>,
     ) -> Result<inquire::autocompletion::Replacement, inquire::CustomUserError> {
         let suggestions = self
             .get_suggestions(input)
@@ -206,13 +244,20 @@ impl Autocomplete for &Categories {
 
 impl<'a> Autocomplete for TagCompleter<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let input = if input.starts_with('#') { &input[1..] } else { input };
+        let input = if input.starts_with('#') {
+            &input[1..]
+        } else {
+            input
+        };
         Ok(self
             .0
             .iter()
             .filter(|s| s.starts_with(input))
             .cloned()
-            .map(|mut s| { s.insert(0, '#'); s })
+            .map(|mut s| {
+                s.insert(0, '#');
+                s
+            })
             .collect())
     }
 
@@ -229,8 +274,18 @@ impl<'a> Autocomplete for TagCompleter<'a> {
 }
 
 impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
-    fn validate(&self, input: &str) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
-        if self.0.options.iter().chain(self.1.options.iter()).find(|cat| cat.as_str() == input).is_some() {
+    fn validate(
+        &self,
+        input: &str,
+    ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
+        if self
+            .0
+            .options
+            .iter()
+            .chain(self.1.options.iter())
+            .find(|cat| cat.as_str() == input)
+            .is_some()
+        {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
@@ -239,7 +294,10 @@ impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
 }
 
 impl StringValidator for &Categories {
-    fn validate(&self, input: &str) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
+    fn validate(
+        &self,
+        input: &str,
+    ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
         if self.options.contains(&input.to_owned()) {
             Ok(Validation::Valid)
         } else {
@@ -250,7 +308,11 @@ impl StringValidator for &Categories {
 
 impl<'a> StringValidator for TagCompleter<'a> {
     fn validate(&self, input: &str) -> Result<Validation, inquire::CustomUserError> {
-        let tag = if input.starts_with('#') { &input[1..] } else { input };
+        let tag = if input.starts_with('#') {
+            &input[1..]
+        } else {
+            input
+        };
         if self.0.contains(&tag.to_owned()) {
             Ok(Validation::Valid)
         } else {
@@ -293,38 +355,6 @@ impl Sub for SimpleTime {
             minutes += 60 * 24;
         }
         return TimeDelta::minutes(minutes);
-    }
-}
-
-pub struct InvariantsChecker {
-    save_data: SaveData
-}
-
-enum BrokenInvariant {
-    /// bool: true if in archived_categories
-    CategoryNotUnique(Vec<(String, bool)>), // manual
-    TagNotUnique(String), // automatic
-    TagContainsSpace(String), // sometimes automatic
-    NonCategoryTagMapKey(String), // automatic
-    NonTagTagMapValue(String), // automatic
-    NonexistentEventCategory(Event, usize), // manual
-    NonexistentEventTag(Event, usize), // manual
-    EventTagDescMismatch(Event, usize), // automatic
-}
-
-impl InvariantsChecker {
-    pub fn new(save_data: SaveData) -> Self {
-        Self {
-            save_data
-        }
-    }
-}
-
-impl Iterator for InvariantsChecker {
-    type Item = BrokenInvariant;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        todo!()
     }
 }
 
@@ -448,7 +478,7 @@ impl SaveDataVersioned {
     fn as_latest(self) -> SaveData {
         match self {
             Self::V6(data) => data,
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -504,14 +534,13 @@ impl From<SaveDataV6> for SaveDataVersioned {
     }
 }
 
-
 impl Upgrade for SaveDataV1 {
     type Next = SaveDataV2;
     fn upgrade(self) -> Self::Next {
         SaveDataV2 {
             categories: self.categories,
             archived_categories: Default::default(),
-            events: self.events
+            events: self.events,
         }
     }
 }
@@ -552,10 +581,17 @@ impl Upgrade for SaveDataV4 {
             archived_categories: self.archived_categories,
             tags: self.tags,
             tag_map: self.tag_map,
-            events: self.events
+            events: self
+                .events
                 .into_iter()
-                .map(|EventV1 { start_time, end_time, date, category, comments }| 
-                    EventV5 {
+                .map(
+                    |EventV1 {
+                         start_time,
+                         end_time,
+                         date,
+                         category,
+                         comments,
+                     }| EventV5 {
                         start_time,
                         end_time,
                         date,
@@ -566,9 +602,10 @@ impl Upgrade for SaveDataV4 {
                             .filter(|s| s.starts_with('#'))
                             .filter(|s| tags.iter().find(|tag| tag.as_str() == &s[1..]).is_some())
                             .map(|s| s[1..].to_owned())
-                            .collect()
-                    }
-                ).collect(),
+                            .collect(),
+                    },
+                )
+                .collect(),
             daily_notes: self.daily_notes,
         }
     }
@@ -577,9 +614,25 @@ impl Upgrade for SaveDataV4 {
 impl Upgrade for SaveDataV5 {
     type Next = SaveDataV6;
     fn upgrade(self) -> Self::Next {
-        let SaveDataV5 { categories, archived_categories, tags, mut tag_map, events, daily_notes } = self;
-        archived_categories.options.iter().for_each(|c| {tag_map.remove(c);});
-        SaveDataV6 { categories, archived_categories, tags, tag_map, events, daily_notes }
+        let SaveDataV5 {
+            categories,
+            archived_categories,
+            tags,
+            mut tag_map,
+            events,
+            daily_notes,
+        } = self;
+        archived_categories.options.iter().for_each(|c| {
+            tag_map.remove(c);
+        });
+        SaveDataV6 {
+            categories,
+            archived_categories,
+            tags,
+            tag_map,
+            events,
+            daily_notes,
+        }
     }
 }
 
@@ -607,7 +660,11 @@ pub type Event = EventV5;
 
 impl Display for Event {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {} ({}, {}-{})", self.category, self.description, self.date, self.start_time, self.end_time)
+        write!(
+            f,
+            "{}: {} ({}, {}-{})",
+            self.category, self.description, self.date, self.start_time, self.end_time
+        )
     }
 }
 

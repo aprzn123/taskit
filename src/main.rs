@@ -5,7 +5,8 @@ mod tui;
 use std::{
     fs::{File, create_dir_all, rename},
     io::{Read, Write},
-    path::Path, process::ExitCode,
+    path::Path,
+    process::ExitCode,
 };
 
 use clap::{Parser, Subcommand};
@@ -30,10 +31,10 @@ enum CliSubcommands {
     #[clap(alias = "list")]
     Show,
     /// Modify a previously added event.
-    Amend { 
+    Amend {
         /// Amend the most recently added event.
         #[arg(long)]
-        latest: bool 
+        latest: bool,
     },
     /// Mark a category as archived, so no new events will be added to it.
     Archive { category: String },
@@ -55,16 +56,22 @@ enum CliSubcommands {
 
 fn main() -> ExitCode {
     let project_dirs = ProjectDirs::from(
-        "xyz", 
-        "interestingzinc", 
-        if cfg!(debug_assertions) { "taskit_debug" } else { "taskit" }
-    ).expect("assume that there is a home directory");
+        "xyz",
+        "interestingzinc",
+        if cfg!(debug_assertions) {
+            "taskit_debug"
+        } else {
+            "taskit"
+        },
+    )
+    .expect("assume that there is a home directory");
 
     let save_data_file_path = {
         let mut path = project_dirs.data_dir().to_path_buf();
         if !path.exists() {
             println!("data directory does not exist. creating...");
-            create_dir_all(&path).expect("assume we have access to data directory - can't run without");
+            create_dir_all(&path)
+                .expect("assume we have access to data directory - can't run without");
         }
         path.push("save.json");
         path
@@ -99,11 +106,13 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("{e} No modifications made.");
             return ExitCode::FAILURE;
-        },
+        }
     };
     if !save_delta.is_empty() {
         let mut save_data = read_save_data(&save_data_file_path).extract().0;
-        save_data.apply(save_delta).expect("save_delta doesn't actually return an error ever");
+        save_data
+            .apply(save_delta)
+            .expect("save_delta doesn't actually return an error ever");
         write_save_data(save_data, &save_data_file_path);
     }
     ExitCode::SUCCESS
@@ -112,9 +121,12 @@ fn main() -> ExitCode {
 fn read_save_data(path: impl AsRef<Path>) -> SaveDataVersioned {
     let mut save_data = String::new();
     if let Ok(mut save_data_file) = File::open(path) {
-        save_data_file.read_to_string(&mut save_data).expect("save data file should be readable and utf-8");
+        save_data_file
+            .read_to_string(&mut save_data)
+            .expect("save data file should be readable and utf-8");
         // TODO perhaps indicate the error in more detail in the case that deserialization fails?
-        serde_json::from_str::<SaveDataVersioned>(&save_data).expect("save data file should be valid JSON in the save data format")
+        serde_json::from_str::<SaveDataVersioned>(&save_data)
+            .expect("save data file should be valid JSON in the save data format")
     } else {
         Default::default()
     }
@@ -123,8 +135,14 @@ fn read_save_data(path: impl AsRef<Path>) -> SaveDataVersioned {
 fn write_save_data(data: SaveData, path: impl AsRef<Path>) {
     let save_data_temp_path = path.as_ref().with_extension("tmp");
     {
-        let mut save_data_temp_file = File::create(&save_data_temp_path).expect("path should be known to be valid and file creation should be allowed");
-        save_data_temp_file.write_all(&serde_json::to_vec(&SaveDataVersioned::from(data)).expect("the file we just created should be writable")).expect("we should be able to write to the save file");
+        let mut save_data_temp_file = File::create(&save_data_temp_path)
+            .expect("path should be known to be valid and file creation should be allowed");
+        save_data_temp_file
+            .write_all(
+                &serde_json::to_vec(&SaveDataVersioned::from(data))
+                    .expect("the file we just created should be writable"),
+            )
+            .expect("we should be able to write to the save file");
     }
     rename(save_data_temp_path, &path).expect("we should be able to rename files");
 }

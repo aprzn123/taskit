@@ -1,15 +1,38 @@
-use std::{cmp::min, collections::{BTreeMap, HashMap, HashSet}, fmt::Display, io::stdout, iter, sync::{LazyLock}, time::{Duration, Instant}};
+use std::{
+    cmp::min,
+    collections::{BTreeMap, HashMap, HashSet},
+    fmt::Display,
+    io::stdout,
+    iter,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use chrono::{NaiveDate, NaiveDateTime, TimeDelta};
-use crossterm::{cursor::MoveTo, event::{Event as CEvent, KeyModifiers}, execute, terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType}};
+use crossterm::{
+    cursor::MoveTo,
+    event::{Event as CEvent, KeyModifiers},
+    execute,
+    terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
+};
 use inquire::error::InquireResult;
 use itertools::Itertools;
 use ratatui::{
-    layout::{Constraint, Direction, Layout}, style::{Style, Stylize}, text::{Line, Span, Text}, widgets::{Block, Paragraph}, Frame
+    Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Style, Stylize},
+    text::{Line, Span, Text},
+    widgets::{Block, Paragraph},
 };
 use smallvec::SmallVec;
 
-use crate::{common::{Categories, CategoriesPair, DeltaItem, Event, SaveData, error::{Source, TaskitResult, With}}, tui::framework::{self, TuiState, sync::ExternalFunction}};
+use crate::{
+    common::{
+        Categories, CategoriesPair, DeltaItem, Event, SaveData,
+        error::{Source, TaskitResult, With},
+    },
+    tui::framework::{self, TuiState, sync::ExternalFunction},
+};
 
 type Extrinsic<'a> = framework::Extrinsic<State<'a>>;
 
@@ -51,14 +74,17 @@ struct State<'a> {
     last_cursor_show_time: Instant,
 }
 
-static HEADER: LazyLock<&[HeaderButton]> = LazyLock::new(|| vec![
-    HeaderButton::Filter(Filter::StartDate(Default::default())),
-    HeaderButton::Filter(Filter::EndDate(Default::default())),
-    HeaderButton::Filter(Filter::Category(Default::default())),
-    HeaderButton::Filter(Filter::Description(Default::default())),
-    HeaderButton::DeleteLastFilter,
-    HeaderButton::ClearFilters,
-].leak());
+static HEADER: LazyLock<&[HeaderButton]> = LazyLock::new(|| {
+    vec![
+        HeaderButton::Filter(Filter::StartDate(Default::default())),
+        HeaderButton::Filter(Filter::EndDate(Default::default())),
+        HeaderButton::Filter(Filter::Category(Default::default())),
+        HeaderButton::Filter(Filter::Description(Default::default())),
+        HeaderButton::DeleteLastFilter,
+        HeaderButton::ClearFilters,
+    ]
+    .leak()
+});
 
 enum Filter {
     StartDate(NaiveDate),
@@ -76,7 +102,10 @@ enum HeaderButton {
 
 enum InquireRequest<'a, 'b, 'c> {
     DateSelect(&'a str),
-    CategoryFilter {categories: &'b Categories, archived_categories: &'c Categories},
+    CategoryFilter {
+        categories: &'b Categories,
+        archived_categories: &'c Categories,
+    },
 }
 
 enum InquireResponse {
@@ -88,14 +117,14 @@ impl InquireResponse {
     fn date(self) -> Option<InquireResult<NaiveDate>> {
         match self {
             Self::Date(d) => Some(d),
-            _ => None
+            _ => None,
         }
     }
 
     fn category(self) -> Option<InquireResult<String>> {
         match self {
             Self::Category(c) => Some(c),
-            _ => None
+            _ => None,
         }
     }
 }
@@ -176,92 +205,126 @@ impl<'a, 'b> framework::TuiState for State<'a> {
 
     fn external_function(request: Self::Call) -> Self::Response {
         match request {
-            InquireRequest::DateSelect(s) => InquireResponse::Date(inquire::DateSelect::new(s).prompt()),
+            InquireRequest::DateSelect(s) => {
+                InquireResponse::Date(inquire::DateSelect::new(s).prompt())
+            }
 
-            InquireRequest::CategoryFilter { categories, archived_categories } => InquireResponse::Category(
+            InquireRequest::CategoryFilter {
+                categories,
+                archived_categories,
+            } => InquireResponse::Category(
                 inquire::Text::new("Select a category:")
-                .with_autocomplete(CategoriesPair(categories, archived_categories))
-                .with_validator(CategoriesPair(categories, archived_categories))
-                .prompt()
+                    .with_autocomplete(CategoriesPair(categories, archived_categories))
+                    .with_validator(CategoriesPair(categories, archived_categories))
+                    .prompt(),
             ),
         }
     }
 
-    fn handle_message(&mut self, message: Self::Message, call: &ExternalFunction<Self::Call, Self::Response>) -> TaskitResult<Option<framework::Extrinsic<Self>>> {
+    fn handle_message(
+        &mut self,
+        message: Self::Message,
+        call: &ExternalFunction<Self::Call, Self::Response>,
+    ) -> TaskitResult<Option<framework::Extrinsic<Self>>> {
         match message {
             Message::Exit => return Ok(Some(Extrinsic::Halt)),
             Message::ScrollDown => self.scroll_position = self.scroll_position.saturating_add(3),
             Message::ScrollUp => self.scroll_position = self.scroll_position.saturating_sub(3),
             Message::TabLeft => self.header_highlight = self.header_highlight.saturating_sub(1),
-            Message::TabRight => self.header_highlight = min(self.header_highlight + 1, HEADER.len()),
+            Message::TabRight => {
+                self.header_highlight = min(self.header_highlight + 1, HEADER.len())
+            }
             Message::Enter => {
-                        match HEADER[self.header_highlight] {
-                            HeaderButton::Filter(Filter::StartDate(_)) => {
-                                // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
-                                disable_raw_mode().with(Source::DrawingTui)?;
-                                let date = call.call(InquireRequest::DateSelect("Start date filter:"))
-                                    .date().expect("requested a date").with(Source::SettingFilter)?;
-                                enable_raw_mode().with(Source::DrawingTui)?;
-                                self.applied_filters.push(Filter::StartDate(date));
-                                return Ok(Some(Extrinsic::ResetRatatui));
-                            },
-                            HeaderButton::Filter(Filter::EndDate(_)) => {
-                                // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
-                                disable_raw_mode().with(Source::DrawingTui)?;
-                                let date = call.call(InquireRequest::DateSelect("End date filter:"))
-                                    .date().expect("requested a date").with(Source::SettingFilter)?;
-                                enable_raw_mode().with(Source::DrawingTui)?;
-                                self.applied_filters.push(Filter::EndDate(date));
-                                return Ok(Some(Extrinsic::ResetRatatui));
-                            },
-                            HeaderButton::Filter(Filter::Category(_)) => {
-                                // temporarily breaking out of ratatui
-                                execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0)).with(Source::DrawingTui)?;
-                                disable_raw_mode().with(Source::DrawingTui)?;
-                                let category = call.call(InquireRequest::CategoryFilter {
-                                    categories: self.categories, 
-                                    archived_categories: self.archived_categories,
-                                }).category().expect("requested a category").with(Source::SettingFilter)?;
-                                enable_raw_mode().with(Source::DrawingTui)?;
-                                self.applied_filters.push(Filter::Category(category));
-                                return Ok(Some(Extrinsic::ResetRatatui));
-                            },
-                            HeaderButton::Filter(Filter::Description(_)) => self.editing_filter = Some(Filter::Description(String::new())),
-                            HeaderButton::ClearFilters => self.applied_filters.clear(),
-                            HeaderButton::DeleteLastFilter => { self.applied_filters.pop(); },
-                        }
-                    },
+                match HEADER[self.header_highlight] {
+                    HeaderButton::Filter(Filter::StartDate(_)) => {
+                        // temporarily breaking out of ratatui
+                        execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
+                            .with(Source::DrawingTui)?;
+                        disable_raw_mode().with(Source::DrawingTui)?;
+                        let date = call
+                            .call(InquireRequest::DateSelect("Start date filter:"))
+                            .date()
+                            .expect("requested a date")
+                            .with(Source::SettingFilter)?;
+                        enable_raw_mode().with(Source::DrawingTui)?;
+                        self.applied_filters.push(Filter::StartDate(date));
+                        return Ok(Some(Extrinsic::ResetRatatui));
+                    }
+                    HeaderButton::Filter(Filter::EndDate(_)) => {
+                        // temporarily breaking out of ratatui
+                        execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
+                            .with(Source::DrawingTui)?;
+                        disable_raw_mode().with(Source::DrawingTui)?;
+                        let date = call
+                            .call(InquireRequest::DateSelect("End date filter:"))
+                            .date()
+                            .expect("requested a date")
+                            .with(Source::SettingFilter)?;
+                        enable_raw_mode().with(Source::DrawingTui)?;
+                        self.applied_filters.push(Filter::EndDate(date));
+                        return Ok(Some(Extrinsic::ResetRatatui));
+                    }
+                    HeaderButton::Filter(Filter::Category(_)) => {
+                        // temporarily breaking out of ratatui
+                        execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
+                            .with(Source::DrawingTui)?;
+                        disable_raw_mode().with(Source::DrawingTui)?;
+                        let category = call
+                            .call(InquireRequest::CategoryFilter {
+                                categories: self.categories,
+                                archived_categories: self.archived_categories,
+                            })
+                            .category()
+                            .expect("requested a category")
+                            .with(Source::SettingFilter)?;
+                        enable_raw_mode().with(Source::DrawingTui)?;
+                        self.applied_filters.push(Filter::Category(category));
+                        return Ok(Some(Extrinsic::ResetRatatui));
+                    }
+                    HeaderButton::Filter(Filter::Description(_)) => {
+                        self.editing_filter = Some(Filter::Description(String::new()))
+                    }
+                    HeaderButton::ClearFilters => self.applied_filters.clear(),
+                    HeaderButton::DeleteLastFilter => {
+                        self.applied_filters.pop();
+                    }
+                }
+            }
             Message::KeyTyped(c) => {
                 if let Some(Filter::Description(ref mut cat)) = self.editing_filter {
                     self.last_cursor_show_time = Instant::now();
                     self.cursor_blink = true;
                     cat.push(c);
                 }
-            },
+            }
             Message::Backspace => {
                 if let Some(Filter::Description(ref mut cat)) = self.editing_filter {
                     self.last_cursor_show_time = Instant::now();
                     self.cursor_blink = true;
                     cat.pop();
                 }
-            },
+            }
             Message::FinishFilter => {
                 if let Some(fil) = self.editing_filter.take() {
                     self.applied_filters.push(fil);
                 }
-            },
+            }
             Message::CancelFilter => {
                 self.editing_filter = None;
-            },
+            }
             Message::BlinkCursor(real) => {
                 if real {
                     self.cursor_blink = !self.cursor_blink;
                 }
-                return Ok(Some(Extrinsic::ResolveAfter(Duration::from_millis(500), Box::new(|state| {
-                        [Message::BlinkCursor(state.last_cursor_show_time.elapsed() > Duration::from_millis(500))].into()
-                }))))
+                return Ok(Some(Extrinsic::ResolveAfter(
+                    Duration::from_millis(500),
+                    Box::new(|state| {
+                        [Message::BlinkCursor(
+                            state.last_cursor_show_time.elapsed() > Duration::from_millis(500),
+                        )]
+                        .into()
+                    }),
+                )));
             }
         }
         Ok(None)
@@ -271,57 +334,71 @@ impl<'a, 'b> framework::TuiState for State<'a> {
         match ev {
             CEvent::Key(key_event)
                 if key_event.is_press()
-                && key_event.code.is_char('c')
-                && key_event.modifiers == KeyModifiers::CONTROL
-                => [Message::Exit].into(),
-            CEvent::Key(key_event)
-                if key_event.is_press() 
-                && key_event.code.is_down() 
-                => [Message::ScrollDown].into(),
-            CEvent::Key(key_event)
-                if key_event.is_press() 
-                && key_event.code.is_up() 
-                => [Message::ScrollUp].into(),
+                    && key_event.code.is_char('c')
+                    && key_event.modifiers == KeyModifiers::CONTROL =>
+            {
+                [Message::Exit].into()
+            }
+            CEvent::Key(key_event) if key_event.is_press() && key_event.code.is_down() => {
+                [Message::ScrollDown].into()
+            }
+            CEvent::Key(key_event) if key_event.is_press() && key_event.code.is_up() => {
+                [Message::ScrollUp].into()
+            }
             _ => {
                 if let Some(Filter::Description(_)) = self.editing_filter {
                     match ev {
                         CEvent::Key(key_event)
-                        if key_event.is_press() 
-                        && key_event.code.is_backspace()
-                        => [Message::Backspace].into(),
+                            if key_event.is_press() && key_event.code.is_backspace() =>
+                        {
+                            [Message::Backspace].into()
+                        }
                         CEvent::Key(key_event)
-                        if key_event.is_press()
-                        && key_event.code.is_enter() 
-                        => [Message::FinishFilter].into(),
+                            if key_event.is_press() && key_event.code.is_enter() =>
+                        {
+                            [Message::FinishFilter].into()
+                        }
                         CEvent::Key(key_event)
-                        if key_event.is_press()
-                        && key_event.code.is_esc() 
-                        => [Message::CancelFilter].into(),
+                            if key_event.is_press() && key_event.code.is_esc() =>
+                        {
+                            [Message::CancelFilter].into()
+                        }
                         CEvent::Key(key_event)
-                        if key_event.is_press() 
-                        && key_event.code.as_char().is_some()
-                        => [Message::KeyTyped(key_event.code.as_char().expect("verified is_some() in condition"))].into(),
-                        _ => SmallVec::new()
+                            if key_event.is_press() && key_event.code.as_char().is_some() =>
+                        {
+                            [Message::KeyTyped(
+                                key_event
+                                    .code
+                                    .as_char()
+                                    .expect("verified is_some() in condition"),
+                            )]
+                            .into()
+                        }
+                        _ => SmallVec::new(),
                     }
                 } else {
                     match ev {
                         CEvent::Key(key_event)
-                            if key_event.is_press()
-                            && key_event.code.is_char('q')
-                            => [Message::Exit].into(),
+                            if key_event.is_press() && key_event.code.is_char('q') =>
+                        {
+                            [Message::Exit].into()
+                        }
                         CEvent::Key(key_event)
-                            if key_event.is_press()
-                            && key_event.code.is_left()
-                            => [Message::TabLeft].into(),
+                            if key_event.is_press() && key_event.code.is_left() =>
+                        {
+                            [Message::TabLeft].into()
+                        }
                         CEvent::Key(key_event)
-                            if key_event.is_press()
-                            && key_event.code.is_right()
-                            => [Message::TabRight].into(),
+                            if key_event.is_press() && key_event.code.is_right() =>
+                        {
+                            [Message::TabRight].into()
+                        }
                         CEvent::Key(key_event)
-                            if key_event.is_press()
-                            && key_event.code.is_enter()
-                            => [Message::Enter].into(),
-                        _ => SmallVec::new()
+                            if key_event.is_press() && key_event.code.is_enter() =>
+                        {
+                            [Message::Enter].into()
+                        }
+                        _ => SmallVec::new(),
                     }
                 }
             }
@@ -335,21 +412,26 @@ impl<'a, 'b> framework::TuiState for State<'a> {
             .filter(|ev| (&self.applied_filters, &self.editing_filter).filter(ev))
             .chunk_by(|ev| ev.date);
 
-        let events_lines: Vec<Line> = events_chunked
-            .into_iter()
-            .flat_map(|(date, group)| {
-                let (group1, group2): (Vec<_>, Vec<_>) = group.map(|e| (e, e)).unzip();
-                let duration: TimeDelta = group1.into_iter().map(|ev| ev.end_time - ev.start_time).sum();
-                iter::once(Line::default().spans(vec![
-                    Span::raw("------ "),
-                    Span::styled(date.to_string(), Style::new().bold()),
-                    Span::raw(" ("),
-                    Span::styled(duration_to_string(&duration), Style::new().yellow()),
-                    Span::raw(") ------"),
-                ])).chain(
-                    self.daily_notes.get(&date).map(|s| Line::styled(format!("[{s}]"), Style::new().cyan().dim().italic()))
-                ).chain(
-                    group2.into_iter().flat_map(|ev| {
+        let events_lines: Vec<Line> =
+            events_chunked
+                .into_iter()
+                .flat_map(|(date, group)| {
+                    let (group1, group2): (Vec<_>, Vec<_>) = group.map(|e| (e, e)).unzip();
+                    let duration: TimeDelta = group1
+                        .into_iter()
+                        .map(|ev| ev.end_time - ev.start_time)
+                        .sum();
+                    iter::once(Line::default().spans(vec![
+                        Span::raw("------ "),
+                        Span::styled(date.to_string(), Style::new().bold()),
+                        Span::raw(" ("),
+                        Span::styled(duration_to_string(&duration), Style::new().yellow()),
+                        Span::raw(") ------"),
+                    ]))
+                    .chain(self.daily_notes.get(&date).map(|s| {
+                        Line::styled(format!("[{s}]"), Style::new().cyan().dim().italic())
+                    }))
+                    .chain(group2.into_iter().flat_map(|ev| {
                         let duration = ev.end_time - ev.start_time;
                         [
                             // Line::raw(format!("{}: {}-{}", ev.date, ev.start_time, ev.end_time)),
@@ -367,20 +449,21 @@ impl<'a, 'b> framework::TuiState for State<'a> {
                             ]),
                             Line::raw(""),
                         ]
-                    })
-                )
-            })
-            .collect();
+                    }))
+                })
+                .collect();
 
         let events_widget = Paragraph::new(events_lines)
             .block(Block::bordered())
             .scroll((self.scroll_position, 0))
             .wrap(Default::default());
 
-        let filters_lines: Vec<Line> = self.applied_filters.iter()
+        let filters_lines: Vec<Line> = self
+            .applied_filters
+            .iter()
             .map(ToString::to_string)
             .chain(self.editing_filter.iter().map(|f| {
-                let cursor = if self.cursor_blink {"\u{2588}"} else {""};
+                let cursor = if self.cursor_blink { "\u{2588}" } else { "" };
                 format!("(*) {f}{cursor}")
             }))
             .map(Line::raw)
@@ -389,71 +472,107 @@ impl<'a, 'b> framework::TuiState for State<'a> {
             .block(Block::bordered())
             .wrap(Default::default());
 
-        let category_sums = self.events.iter()
+        let category_sums = self
+            .events
+            .iter()
             .filter(|ev| (&self.applied_filters, &self.editing_filter).filter(ev))
             .fold(
-                self.categories.options.iter().map(|cat| (cat.as_str(), TimeDelta::zero())).collect::<BTreeMap<&str, TimeDelta>>(),
+                self.categories
+                    .options
+                    .iter()
+                    .map(|cat| (cat.as_str(), TimeDelta::zero()))
+                    .collect::<BTreeMap<&str, TimeDelta>>(),
                 |mut map, ev| {
-                    map.get_mut(ev.category.as_str()).map(|t| *t += ev.end_time - ev.start_time);
+                    map.get_mut(ev.category.as_str())
+                        .map(|t| *t += ev.end_time - ev.start_time);
                     map
-                }
+                },
             );
         // ...so similar in structure to category_sums code; we've gotta stop doing so much code duplication.
         // Also the loops should probably be merged so we don't end up re-iterating over the event
         // list a million times.
-        let tag_sums = self.events.iter()
+        let tag_sums = self
+            .events
+            .iter()
             .filter(|ev| (&self.applied_filters, &self.editing_filter).filter(ev))
-            .fold(self.tags.iter().map(|tag| (tag.as_str(), TimeDelta::zero())).collect::<BTreeMap<&str, TimeDelta>>(),
+            .fold(
+                self.tags
+                    .iter()
+                    .map(|tag| (tag.as_str(), TimeDelta::zero()))
+                    .collect::<BTreeMap<&str, TimeDelta>>(),
                 |mut map, ev| {
-                    let tags = self.tag_map.get(&ev.category).into_iter().flatten().chain(&ev.tags).collect::<HashSet<_>>();
+                    let tags = self
+                        .tag_map
+                        .get(&ev.category)
+                        .into_iter()
+                        .flatten()
+                        .chain(&ev.tags)
+                        .collect::<HashSet<_>>();
                     for tag in tags {
-                        map.get_mut(tag.as_str()).map(|t| *t += ev.end_time - ev.start_time);
+                        map.get_mut(tag.as_str())
+                            .map(|t| *t += ev.end_time - ev.start_time);
                     }
                     map
-                }
+                },
             );
 
-        let aggregated_data_lines: Vec<Line> = iter::once(Line::styled("Aggregated durations", Style::new().bold().underlined()))
-            .chain(iter::once(Line::default().spans([
-                Span::styled("all", Style::new().bold().green()),
+        let aggregated_data_lines: Vec<Line> = iter::once(Line::styled(
+            "Aggregated durations",
+            Style::new().bold().underlined(),
+        ))
+        .chain(iter::once(Line::default().spans([
+            Span::styled("all", Style::new().bold().green()),
+            Span::raw(": "),
+            Span::raw(duration_to_string(&category_sums.values().sum())),
+        ])))
+        .chain(category_sums.iter().map(|(cat, duration)| {
+            // Line::raw(format!("{cat}: {duration_string}"))
+            Line::default().spans([
+                Span::styled(cat.to_owned(), Style::new().bold().blue()),
                 Span::raw(": "),
-                Span::raw(duration_to_string(&category_sums.values().sum())),
-            ])))
-            .chain(category_sums.iter().map(|(cat, duration)| {
-                // Line::raw(format!("{cat}: {duration_string}"))
-                Line::default().spans([
-                    Span::styled(cat.to_owned(), Style::new().bold().blue()),
-                    Span::raw(": "),
-                    Span::raw(duration_to_string(duration)),
-                ])
-            }))
-            .chain(iter::once(Line::default()))
-            .chain(tag_sums.iter().map(|(tag, dur)| {
-                Line::default().spans([
-                    Span::styled(tag.to_owned(), Style::new().bold().magenta()),
-                    Span::raw(": "),
-                    Span::raw(duration_to_string(dur)),
-                ])
-            }))
-            .collect();
-        let aggregated_data_widget = Paragraph::new(aggregated_data_lines)
-            .block(Block::bordered());
+                Span::raw(duration_to_string(duration)),
+            ])
+        }))
+        .chain(iter::once(Line::default()))
+        .chain(tag_sums.iter().map(|(tag, dur)| {
+            Line::default().spans([
+                Span::styled(tag.to_owned(), Style::new().bold().magenta()),
+                Span::raw(": "),
+                Span::raw(duration_to_string(dur)),
+            ])
+        }))
+        .collect();
+        let aggregated_data_widget = Paragraph::new(aggregated_data_lines).block(Block::bordered());
 
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Length(1), Constraint::Fill(1), Constraint::Length(1)])
+            .constraints(vec![
+                Constraint::Length(1),
+                Constraint::Fill(1),
+                Constraint::Length(1),
+            ])
             .split(frame.area());
         let main_panel_layout = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Fill(1), Constraint::Fill(1), Constraint::Fill(1)])
+            .constraints([
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ])
             .split(outer_layout[1]);
         let header_layout = Layout::default()
             .direction(Direction::Horizontal)
             .constraints(iter::repeat_n(Constraint::Length(15), HEADER.len() + 1))
             .split(outer_layout[0]);
-        frame.render_widget("arrow keys for navigation - enter to select", outer_layout[2]);
+        frame.render_widget(
+            "arrow keys for navigation - enter to select",
+            outer_layout[2],
+        );
 
-        frame.render_widget(Text::styled("Filters:", Style::new().bold()), header_layout[0]);
+        frame.render_widget(
+            Text::styled("Filters:", Style::new().bold()),
+            header_layout[0],
+        );
         for (i, option) in HEADER.iter().enumerate() {
             frame.render_widget(
                 Paragraph::new(Text::styled(
@@ -480,10 +599,14 @@ impl<'a, 'b> framework::TuiState for State<'a> {
 pub fn filter_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let mut events = save_data.events.clone();
     events.sort_by_key(|e| {
-        -NaiveDateTime::new(e.date, e.start_time.try_into()
-            .expect("trust that save file only contains valid timestamps"))
-            .and_utc()
-            .timestamp()
+        -NaiveDateTime::new(
+            e.date,
+            e.start_time
+                .try_into()
+                .expect("trust that save file only contains valid timestamps"),
+        )
+        .and_utc()
+        .timestamp()
     });
     let state = State {
         categories: &save_data.categories,
