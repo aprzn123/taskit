@@ -20,13 +20,13 @@ struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 enum CliSubcommands {
-    /// Add a new event, manually inputting all of its fields.
+    /// (alias: taskit add) Add a new event, manually inputting all of its fields.
     #[clap(alias = "add")]
     Record,
-    /// Start a timer and add it as an event once it's done.
+    /// (alias: taskit time, taskit start) Start a timer and add it as an event once it's done.
     #[clap(alias = "time", alias = "start")]
     Stopwatch,
-    /// Open the dashboard that displays all tracked time and allows you to filter events.
+    /// (alias: taskit list) Open the dashboard that displays all tracked time and allows you to filter events.
     #[clap(alias = "list")]
     Show,
     /// Modify a previously added event.
