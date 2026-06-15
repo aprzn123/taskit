@@ -1,10 +1,12 @@
+/*
 use std::collections::{HashMap, HashSet};
 
 use crate::common::{Event, SaveData, error::TaskitResult};
 
 pub struct InvariantsChecker {
     save_data: SaveData,
-    suggestions_required: Option<Vec<InvariantRepair>>
+    suggestions_required: Option<Vec<InvariantRepair>>,
+    invariant_checking: Option<BrokenInvariant>,
 }
 
 pub struct BrokenInvariant {
@@ -62,17 +64,20 @@ impl InvariantsChecker {
         Some(VerifiedInvariantRepair(repair))
     }
 
-    fn query_fix<F: Fn(BrokenInvariant, &Self) -> TaskitResult<VerifiedInvariantRepair>>(&mut self, select_fix: F, broken_invariant: BrokenInvariant, suggestions_required: Option<Vec<InvariantRepair>>) -> TaskitResult<InvariantRepair> {
+    fn query_fix<F, E>(&mut self, select_fix: F, broken_invariant: BrokenInvariant, suggestions_required: Option<Vec<InvariantRepair>>) -> Result<InvariantRepair, E> 
+    where F: Fn(BrokenInvariant, &Self) -> Result<VerifiedInvariantRepair, E> {
         self.suggestions_required = suggestions_required.clone();
         Ok(select_fix(broken_invariant, &self)?.0)
     }
 
     // allow directive to temporarily suppress annoying warnings
     #[allow(unreachable_code)]
-    pub fn fix_all<F: Fn(BrokenInvariant, &Self) -> TaskitResult<VerifiedInvariantRepair>>(
+    pub fn fix_all<F, E>(
         mut self,
         select_fix: F,
-    ) -> TaskitResult<SaveData> {
+    ) -> Result<SaveData, E> 
+    where F: Fn(BrokenInvariant, &Self) -> Result<VerifiedInvariantRepair, E>,
+    {
         // check for non-unique categories
         {
             let all_categories: HashMap<String, Vec<bool>> = self.save_data.categories.options.iter().cloned().fold(
@@ -143,7 +148,8 @@ impl InvariantsChecker {
         // check for spaces in tags
         for tag in self.save_data.tags.clone() {
             if tag.contains(' ') {
-                let repair = self.query_fix(select_fix, BrokenInvariant { kind: BrokenInvariantKind::TagContainsSpace(tag), suggestions: todo!() }, todo!());
+                let past_tags = todo!();
+                let repair = self.query_fix(select_fix, BrokenInvariant { kind: BrokenInvariantKind::TagContainsSpace(tag), suggestions: todo!()}, None);
             }
         }
         todo!("check for non-category keys in tag_map");
@@ -154,4 +160,4 @@ impl InvariantsChecker {
         Ok(self.save_data)
     }
 }
-
+*/

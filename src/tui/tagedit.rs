@@ -43,7 +43,7 @@ enum Column {
 struct State<'a> {
     categories: &'a Categories,
     /// Maps from category name to tags
-    original_tag_map: &'a HashMap<String, Vec<String>>,
+    original_tag_map: &'a HashMap<String, HashSet<String>>,
     /// Maps from category name to tags
     new_tag_map: HashMap<String, HashSet<String>>,
     direction: Direction,
@@ -90,15 +90,15 @@ impl<'a> State<'a> {
 
     fn left(&self) -> &'a [String] {
         match self.direction {
-            Direction::CategoryToTag => self.categories.options.as_ref(),
             Direction::TagToCategory => self.tags,
+            Direction::CategoryToTag => self.categories.options.as_slice()
         }
     }
 
     fn right(&self) -> &'a [String] {
         match self.direction {
-            Direction::CategoryToTag => self.tags,
-            Direction::TagToCategory => self.categories.options.as_ref(),
+            Direction::TagToCategory => self.categories.options.as_slice(),
+            Direction::CategoryToTag => self.tags
         }
     }
 
@@ -203,7 +203,7 @@ impl<'a> TuiState for State<'a> {
             vertical_layout[1],
         );
         frame.render_stateful_widget(
-            List::new(self.left().iter().map(String::as_str))
+            List::new(self.left().iter().map(|s| String::as_str(s)))
                 .block(Block::bordered().border_type(BorderType::Rounded))
                 .highlight_style(self.column.hl_style(Column::Left)),
             main_panels[0],

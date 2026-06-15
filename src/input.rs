@@ -1,8 +1,5 @@
 use std::{
-    fmt::Display,
-    io::{Write, stdout},
-    thread::sleep,
-    time::Duration,
+    collections::HashSet, fmt::Display, io::{Write, stdout}, thread::sleep, time::Duration
 };
 
 use crossterm::{
@@ -65,7 +62,7 @@ impl<'a> Autocomplete for DescriptionTagsAutocomplete<'a> {
     }
 }
 
-fn get_description_tags(description: &str) -> Vec<String> {
+pub fn get_description_tags(description: &str) -> HashSet<String> {
     description
         .split(' ')
         .filter(|s| s.starts_with('#'))
@@ -73,13 +70,14 @@ fn get_description_tags(description: &str) -> Vec<String> {
         .collect()
 }
 
-/// Retun Ok of delta items required to add new tags, or Err if user refused
-fn validate_description_tags(
-    tags: &[String],
+/// The purpose of this function is to add new tags in case the description included tags that don't exist.
+/// Retuns Ok(delta items required to add new tags), or Err if user refused
+fn validate_description_tags<'a>(
+    tags: impl Iterator<Item=&'a String>,
     valid_tags: &[String],
 ) -> TaskitResult<Vec<DeltaItem>> {
     let mut out = vec![];
-    for tag in tags.iter().filter(|tag| !valid_tags.contains(tag)) {
+    for tag in tags.filter(|tag| !valid_tags.contains(tag)) {
         if tag.contains(' ') {
             return Err(Kind::NoSpaceInTag.with(Source::CreatingTag));
         }
@@ -132,7 +130,7 @@ pub fn record_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         }
     }
     let tags = get_description_tags(&comments);
-    delta.extend(validate_description_tags(&tags, &save_data.tags)?);
+    delta.extend(validate_description_tags(tags.iter(), &save_data.tags)?);
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
         end_time,
@@ -205,7 +203,7 @@ pub fn stopwatch_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .prompt()
         .with(Source::CreatingEntry)?;
     let tags = get_description_tags(&comments);
-    delta.extend(validate_description_tags(&tags, &save_data.tags)?);
+    delta.extend(validate_description_tags(tags.iter(), &save_data.tags)?);
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
         end_time,
@@ -311,7 +309,7 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
         }
     }
     let tags = get_description_tags(&comments);
-    delta.extend(validate_description_tags(&tags, &save_data.tags)?);
+    delta.extend(validate_description_tags(tags.iter(), &save_data.tags)?);
     delta.push(DeltaItem::ChangeEvent {
         index,
         new_event: Event {

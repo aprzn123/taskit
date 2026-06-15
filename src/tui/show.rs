@@ -63,7 +63,7 @@ struct State<'a> {
     categories: &'a Categories,
     archived_categories: &'a Categories,
     tags: &'a [String],
-    tag_map: &'a HashMap<String, Vec<String>>,
+    tag_map: &'a HashMap<String, HashSet<String>>,
     daily_notes: &'a HashMap<NaiveDate, String>,
     events: Vec<Event>,
     scroll_position: u16,

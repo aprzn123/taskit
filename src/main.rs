@@ -1,6 +1,7 @@
 mod common;
 mod input;
 mod tui;
+mod util;
 
 use std::{
     fs::{File, create_dir_all, rename},
@@ -10,7 +11,7 @@ use std::{
 };
 
 use clap::{Parser, Subcommand};
-use common::{Apply, SaveData, SaveDataVersioned};
+use common::{Apply, SaveData, UnverifiedSaveDataVersioned};
 use directories::ProjectDirs;
 
 #[derive(clap::Parser, Debug)]
@@ -118,14 +119,14 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn read_save_data(path: impl AsRef<Path>) -> SaveDataVersioned {
+fn read_save_data(path: impl AsRef<Path>) -> UnverifiedSaveDataVersioned {
     let mut save_data = String::new();
     if let Ok(mut save_data_file) = File::open(path) {
         save_data_file
             .read_to_string(&mut save_data)
             .expect("save data file should be readable and utf-8");
         // TODO perhaps indicate the error in more detail in the case that deserialization fails?
-        serde_json::from_str::<SaveDataVersioned>(&save_data)
+        serde_json::from_str::<UnverifiedSaveDataVersioned>(&save_data)
             .expect("save data file should be valid JSON in the save data format")
     } else {
         Default::default()
@@ -139,7 +140,7 @@ fn write_save_data(data: SaveData, path: impl AsRef<Path>) {
             .expect("path should be known to be valid and file creation should be allowed");
         save_data_temp_file
             .write_all(
-                &serde_json::to_vec(&SaveDataVersioned::from(data))
+                &serde_json::to_vec(&UnverifiedSaveDataVersioned::from(data))
                     .expect("the file we just created should be writable"),
             )
             .expect("we should be able to write to the save file");
