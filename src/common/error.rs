@@ -139,8 +139,3 @@ where E: With<Source>
         self.map_err(|e| e.with(source))
     }
 }
-
-/// Represents errors that occur when loading save data (meaning that some invariant is not being
-/// properly upheld in the save data file)
-pub enum LoadError {
-}

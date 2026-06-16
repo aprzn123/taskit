@@ -9,7 +9,7 @@ use inquire::{
 use serde::{Deserialize, Serialize};
 use std::{collections::{HashMap, HashSet}, fmt::Display, ops::Sub, str::FromStr};
 
-use crate::{common::error::{LoadError, TaskitResult}, util::SetVec, input::get_description_tags};
+use crate::{common::error::TaskitResult, util::SetVec, input::get_description_tags};
 
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
 pub struct Categories {
@@ -107,10 +107,10 @@ impl Apply<DeltaItem> for SaveData {
                             && !self.archived_categories.options.contains(&new))
                 );
                 if self.categories.options.remove(&old).is_some() {
-                    self.categories.options.push(new.clone());
+                    self.categories.options.push(new.clone()).expect("category name must be previously uninhabited");
                 }
                 if self.archived_categories.options.remove(&old).is_some() {
-                    self.archived_categories.options.push(new.clone());
+                    self.archived_categories.options.push(new.clone()).expect("archived category name must be previously uninhabited");
                 }
                 self.events.iter_mut().for_each(|ev| {
                     if ev.category == old {
@@ -417,8 +417,6 @@ pub struct UnverifiedSaveDataV6 {
     pub archived_categories: Categories,
     pub tags: Vec<String>,
     /// Maps from category name to tags
-    /// TODO: i believe the change from Vec to HashSet here shouldn't fuck with deserialization;
-    /// should probably test that this is the case though.
     pub tag_map: HashMap<String, HashSet<String>>,
     pub events: Vec<EventV5>,
     pub daily_notes: HashMap<NaiveDate, String>,
@@ -441,8 +439,9 @@ impl Default for UnverifiedSaveDataVersioned {
 }
 
 /// Each of these represents an invariant for the SaveData struct.
+#[allow(unused)]
 #[derive(Debug)]
-enum VerificationError {
+pub enum VerificationError {
     /// each element of `categories` U `archived_categories` must be unique - bool is true iff
     /// violation is between both sets, false if it is contained to one of them
     NonUniqueCategories(String, bool),
@@ -623,13 +622,20 @@ impl UnverifiedSaveDataVersioned {
                 self = self.upgrade_once();
             }
             // panic safety: as_latest only panics if self.outdated(), which is guaranteed false
-            (self.as_latest(), true)
+            (self.fix_and_verify_latest(), true)
         }
     }
 
-    fn as_latest(self) -> SaveData {
+    fn fix_and_verify_latest(self) -> SaveData {
         match self {
             Self::V6(data) => data.fix_and_verify().unwrap(),
+            _ => panic!(),
+        }
+    }
+
+    pub fn verify_latest(self) -> Result<SaveData, VerificationError> {
+        match self {
+            Self::V6(data) => data.verify(),
             _ => panic!(),
         }
     }

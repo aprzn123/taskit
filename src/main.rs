@@ -135,15 +135,19 @@ fn read_save_data(path: impl AsRef<Path>) -> UnverifiedSaveDataVersioned {
 
 fn write_save_data(data: SaveData, path: impl AsRef<Path>) {
     let save_data_temp_path = path.as_ref().with_extension("tmp");
+    let unverified = UnverifiedSaveDataVersioned::from(data);
     {
         let mut save_data_temp_file = File::create(&save_data_temp_path)
             .expect("path should be known to be valid and file creation should be allowed");
         save_data_temp_file
             .write_all(
-                &serde_json::to_vec(&UnverifiedSaveDataVersioned::from(data))
+                &serde_json::to_vec(&unverified)
                     .expect("the file we just created should be writable"),
             )
             .expect("we should be able to write to the save file");
+    }
+    if let Err(e) = unverified.verify_latest() {
+        eprintln!("Warning: newly saved data doesn't verify properly. Please report this issue: \n {e:?}");
     }
     rename(save_data_temp_path, &path).expect("we should be able to rename files");
 }

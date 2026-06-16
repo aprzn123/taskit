@@ -1,4 +1,3 @@
-use core::slice;
 use std::ops::Deref;
 
 /// A SetVec is a Vec that enforces the guarantee that no elements will be duplicated. It doesn't
@@ -46,7 +45,7 @@ impl<T: PartialEq> SetVec<T> {
     }
 
     fn index_of(&self, el: &T) -> Option<usize> {
-        self.0.iter().enumerate().find(|(n, t)| *t == el).map(|(n, _)| n)
+        self.0.iter().enumerate().find(|(_, t)| *t == el).map(|(n, _)| n)
     }
 }
 
