@@ -1,5 +1,4 @@
 pub mod error;
-mod invariants;
 
 use chrono::{NaiveDate, TimeDelta, Timelike};
 use inquire::{
@@ -233,11 +232,7 @@ impl Autocomplete for &Categories {
 
 impl<'a> Autocomplete for TagCompleter<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let input = if input.starts_with('#') {
-            &input[1..]
-        } else {
-            input
-        };
+        let input = input.strip_prefix('#').unwrap_or(input);
         Ok(self
             .0
             .iter()
@@ -272,8 +267,7 @@ impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
             .options
             .iter()
             .chain(self.1.options.iter())
-            .find(|cat| cat.as_str() == input)
-            .is_some()
+            .any(|cat| cat.as_str() == input)
         {
             Ok(Validation::Valid)
         } else {
@@ -297,11 +291,7 @@ impl StringValidator for &Categories {
 
 impl<'a> StringValidator for TagCompleter<'a> {
     fn validate(&self, input: &str) -> Result<Validation, inquire::CustomUserError> {
-        let tag = if input.starts_with('#') {
-            &input[1..]
-        } else {
-            input
-        };
+        let tag = input.strip_prefix('#').unwrap_or(input);
         if self.0.contains(&tag.to_owned()) {
             Ok(Validation::Valid)
         } else {
@@ -343,7 +333,7 @@ impl Sub for SimpleTime {
         if minutes < 0 {
             minutes += 60 * 24;
         }
-        return TimeDelta::minutes(minutes);
+        TimeDelta::minutes(minutes)
     }
 }
 
@@ -356,15 +346,7 @@ trait Upgrade {
 //               When SaveData versioning changes, update everything here
 
 // Version Update Tasks:
-//   - Define new version
-//   - Add variant to UnverifiedSaveDataVersioned
-//   - Update Default impl
-//   - Update UnverifiedSaveData type alias
-//   - Update line 1 of UnverifiedSaveDataVersioned::extract
-//   - Update as_latest, outdated, upgrade_once
-//   - impl From for new version
-//   - impl Upgrade for previous version
-//   - if Event is updated, update its Display impl
+//   - TODO: rewrite these
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV1 {
@@ -641,7 +623,7 @@ impl UnverifiedSaveDataVersioned {
     }
 
     fn outdated(&self) -> bool {
-        if let Self::V6(_) = self { false } else { true }
+        !matches!(self, Self::V6(_))
     }
 
     fn upgrade_once(self) -> Self {
@@ -722,7 +704,7 @@ impl Upgrade for UnverifiedSaveDataV4 {
                         tags: comments
                             .split(' ')
                             .filter(|s| s.starts_with('#'))
-                            .filter(|s| tags.iter().find(|tag| tag.as_str() == &s[1..]).is_some())
+                            .filter(|s| tags.iter().any(|tag| tag.as_str() == &s[1..]))
                             .map(|s| s[1..].to_owned())
                             .collect(),
                     },

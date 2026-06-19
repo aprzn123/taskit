@@ -235,9 +235,7 @@ impl<'a> TuiState for State<'a> {
         );
     }
 
-    fn external_function(_: Self::Call) -> Self::Response {
-        ()
-    }
+    fn external_function(_: Self::Call) -> Self::Response { }
 
     fn get_output(self) -> Self::Output {
         dbg!(

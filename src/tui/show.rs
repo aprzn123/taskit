@@ -197,7 +197,7 @@ fn duration_to_string(duration: &TimeDelta) -> String {
     duration_string
 }
 
-impl<'a, 'b> framework::TuiState for State<'a> {
+impl<'a> framework::TuiState for State<'a> {
     type Message = Message;
     type Call = InquireRequest<'static, 'a, 'a>;
     type Response = InquireResponse;
@@ -483,8 +483,9 @@ impl<'a, 'b> framework::TuiState for State<'a> {
                     .map(|cat| (cat.as_str(), TimeDelta::zero()))
                     .collect::<BTreeMap<&str, TimeDelta>>(),
                 |mut map, ev| {
-                    map.get_mut(ev.category.as_str())
-                        .map(|t| *t += ev.end_time - ev.start_time);
+                    if let Some(t) = map.get_mut(ev.category.as_str()) {
+                        *t += ev.end_time - ev.start_time;
+                    }
                     map
                 },
             );
@@ -509,8 +510,9 @@ impl<'a, 'b> framework::TuiState for State<'a> {
                         .chain(&ev.tags)
                         .collect::<HashSet<_>>();
                     for tag in tags {
-                        map.get_mut(tag.as_str())
-                            .map(|t| *t += ev.end_time - ev.start_time);
+                        if let Some(t) = map.get_mut(tag.as_str()) {
+                            *t += ev.end_time - ev.start_time;
+                        }
                     }
                     map
                 },
