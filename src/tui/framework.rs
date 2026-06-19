@@ -76,6 +76,7 @@ pub enum Extrinsic<S: TuiState> {
     ResetRatatui,
     ResolveAfter(
         Duration,
+        #[allow(clippy::type_complexity)]
         Box<dyn Send + FnOnce(&S) -> MVec<S::Message>>,
     ),
 }
@@ -108,7 +109,6 @@ pub trait TuiState: Sized {
     fn external_function(req: Self::Call) -> Self::Response;
     fn get_output(self) -> Self::Output;
 
-    #[must_use]
     fn run(mut self) -> TaskitResult<Self::Output> {
         let mut terminal = ratatui::init();
 

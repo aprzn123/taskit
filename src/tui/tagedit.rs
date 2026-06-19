@@ -203,7 +203,7 @@ impl<'a> TuiState for State<'a> {
             vertical_layout[1],
         );
         frame.render_stateful_widget(
-            List::new(self.left().iter().map(|s| String::as_str(s)))
+            List::new(self.left().iter().map(String::as_str))
                 .block(Block::bordered().border_type(BorderType::Rounded))
                 .highlight_style(self.column.hl_style(Column::Left)),
             main_panels[0],
