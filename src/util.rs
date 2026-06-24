@@ -69,30 +69,21 @@ impl<T> AsRef<[T]> for SetVec<T> {
     }
 }
 
-// TODO: update unverifiedsavedata to use an ordinary vec instead of Categories so that i can remove these
-impl<'de, T> serde::Deserialize<'de> for SetVec<T> 
-where T: serde::Deserialize<'de> + std::cmp::PartialEq {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de> {
-        Vec::deserialize(deserializer).map(|mut v| { v.dedup(); Self(v) })
-    }
-}
-
-impl<T> serde::Serialize for SetVec<T>
-where T: serde::Serialize {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer {
-            self.0.serialize(serializer)
-    }
-}
-
 impl<T> FromIterator<T> for SetVec<T>
 where T: PartialEq {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut v = iter.into_iter().collect::<Vec<_>>();
         v.dedup();
         Self(v)
+    }
+}
+
+impl<T> IntoIterator for SetVec<T> {
+    type Item = T;
+
+    type IntoIter = <Vec<T> as IntoIterator>::IntoIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
     }
 }

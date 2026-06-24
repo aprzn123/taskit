@@ -14,6 +14,8 @@ use clap::{Parser, Subcommand};
 use common::{Apply, SaveData, UnverifiedSaveDataVersioned};
 use directories::ProjectDirs;
 
+use crate::common::UnverifiedSaveDataLatest;
+
 #[derive(clap::Parser, Debug)]
 struct CliArgs {
     #[command(subcommand)]
@@ -52,6 +54,7 @@ enum CliSubcommands {
     /// Delete any tag
     DeleteTag,
     /// Open a TUI to view and edit associations between categories and tags
+    #[clap(alias = "edit-tags")]
     ManageTags,
 }
 
@@ -78,6 +81,7 @@ fn main() -> ExitCode {
         path
     };
     let (save_data, upgraded) = read_save_data(&save_data_file_path).extract();
+    let save_data = save_data.fix_and_verify().expect("save file must be well-formed");
     if upgraded {
         rename(
             &save_data_file_path,
@@ -110,7 +114,7 @@ fn main() -> ExitCode {
         }
     };
     if !save_delta.is_empty() {
-        let mut save_data = read_save_data(&save_data_file_path).extract().0;
+        let mut save_data = read_save_data(&save_data_file_path).extract().0.fix_and_verify().expect("save data from file should still be well-formed");
         save_data
             .apply(save_delta)
             .expect("save_delta doesn't actually return an error ever");
@@ -135,19 +139,19 @@ fn read_save_data(path: impl AsRef<Path>) -> UnverifiedSaveDataVersioned {
 
 fn write_save_data(data: SaveData, path: impl AsRef<Path>) {
     let save_data_temp_path = path.as_ref().with_extension("tmp");
-    let unverified = UnverifiedSaveDataVersioned::from(data);
+    let unverified = UnverifiedSaveDataLatest::from(data);
     {
         let mut save_data_temp_file = File::create(&save_data_temp_path)
             .expect("path should be known to be valid and file creation should be allowed");
         save_data_temp_file
             .write_all(
-                &serde_json::to_vec(&unverified)
+                &serde_json::to_vec(&UnverifiedSaveDataVersioned::from(unverified.clone()))
                     .expect("the file we just created should be writable"),
             )
             .expect("we should be able to write to the save file");
     }
-    if let Err(e) = unverified.verify_latest() {
-        eprintln!("Warning: newly saved data doesn't verify properly. Please report this issue: \n {e:?}");
+    if let Err(e) = unverified.verify() {
+        eprintln!("Warning: newly saved data doesn't verify properly. Please report this issue on the Taskit GitHub: \n {e:?}");
     }
     rename(save_data_temp_path, &path).expect("we should be able to rename files");
 }

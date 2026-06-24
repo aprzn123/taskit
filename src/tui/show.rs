@@ -28,10 +28,10 @@ use smallvec::SmallVec;
 
 use crate::{
     common::{
-        Categories, CategoriesPair, DeltaItem, Event, SaveData,
-        error::{Source, TaskitResult, With},
+        CategoriesPair, DeltaItem, Event, 
+        error::{Source, TaskitResult, With}, SaveData,
     },
-    tui::framework::{self, TuiState, sync::ExternalFunction},
+    tui::framework::{self, TuiState, sync::ExternalFunction}, util::SetVec,
 };
 
 type Extrinsic<'a> = framework::Extrinsic<State<'a>>;
@@ -60,8 +60,8 @@ impl framework::Message for Message {
 }
 
 struct State<'a> {
-    categories: &'a Categories,
-    archived_categories: &'a Categories,
+    categories: &'a SetVec<String>,
+    archived_categories: &'a SetVec<String>,
     tags: &'a [String],
     tag_map: &'a HashMap<String, HashSet<String>>,
     daily_notes: &'a HashMap<NaiveDate, String>,
@@ -103,8 +103,8 @@ enum HeaderButton {
 enum InquireRequest<'a, 'b, 'c> {
     DateSelect(&'a str),
     CategoryFilter {
-        categories: &'b Categories,
-        archived_categories: &'c Categories,
+        categories: &'b SetVec<String>,
+        archived_categories: &'c SetVec<String>,
     },
 }
 
@@ -478,7 +478,6 @@ impl<'a> framework::TuiState for State<'a> {
             .filter(|ev| (&self.applied_filters, &self.editing_filter).filter(ev))
             .fold(
                 self.categories
-                    .options
                     .iter()
                     .map(|cat| (cat.as_str(), TimeDelta::zero()))
                     .collect::<BTreeMap<&str, TimeDelta>>(),

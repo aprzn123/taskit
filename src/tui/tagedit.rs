@@ -13,8 +13,8 @@ use ratatui::{
 use smallvec::SmallVec;
 
 use crate::{
-    common::{Categories, DeltaItem, SaveData, error::TaskitResult},
-    tui::framework::{self, TuiState},
+    common::{DeltaItem, SaveData, error::TaskitResult},
+    tui::framework::{self, TuiState}, util::SetVec,
 };
 
 type Extrinsic<'a> = framework::Extrinsic<State<'a>>;
@@ -41,7 +41,7 @@ enum Column {
 }
 
 struct State<'a> {
-    categories: &'a Categories,
+    categories: &'a SetVec<String>,
     /// Maps from category name to tags
     original_tag_map: &'a HashMap<String, HashSet<String>>,
     /// Maps from category name to tags
@@ -91,19 +91,19 @@ impl<'a> State<'a> {
     fn left(&self) -> &'a [String] {
         match self.direction {
             Direction::TagToCategory => self.tags,
-            Direction::CategoryToTag => self.categories.options.as_slice()
+            Direction::CategoryToTag => self.categories.as_slice()
         }
     }
 
     fn right(&self) -> &'a [String] {
         match self.direction {
-            Direction::TagToCategory => self.categories.options.as_slice(),
+            Direction::TagToCategory => self.categories.as_slice(),
             Direction::CategoryToTag => self.tags
         }
     }
 
     fn selected_category(&self) -> &'a str {
-        self.categories.options[match self.direction {
+        self.categories[match self.direction {
             Direction::CategoryToTag => &self.left_list_state,
             Direction::TagToCategory => &self.right_list_state,
         }
@@ -258,7 +258,7 @@ impl<'a> TuiState for State<'a> {
 }
 
 pub fn tagedit_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
-    if save_data.categories.options.is_empty() || save_data.tags.is_empty() {
+    if save_data.categories.is_empty() || save_data.tags.is_empty() {
         println!("Must have at least one tag and one category to manage tags!");
         // Should this be Err?
         return Ok(vec![]);

@@ -9,8 +9,7 @@ use crossterm::{
 use inquire::{Autocomplete, Confirm, CustomType, DateSelect, Select, Text};
 
 use crate::common::{
-    CategoriesPair, DeltaItem, Event, SaveData, SimpleTime, TagCompleter,
-    error::{Kind, Source, TaskitResult, With},
+    CategoriesCompleter, CategoriesPair, DeltaItem, Event, SaveData, SimpleTime, TagCompleter, error::{Kind, Source, TaskitResult, With}
 };
 
 #[derive(Clone)]
@@ -18,7 +17,7 @@ struct DescriptionTagsAutocomplete<'a>(&'a [String]);
 
 impl<'a> Autocomplete for DescriptionTagsAutocomplete<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
-        let partial_tag = input.split(' ').last().and_then(|s| s.strip_prefix('#'));
+        let partial_tag = input.split(' ').next_back().and_then(|s| s.strip_prefix('#'));
         if let Some(partial_tag) = partial_tag {
             Ok(self
                 .0
@@ -96,7 +95,7 @@ pub fn record_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .prompt()
         .with(Source::CreatingEntry)?;
     let category = Text::new("Select a category:")
-        .with_autocomplete(&save_data.categories)
+        .with_autocomplete(CategoriesCompleter(&save_data.categories))
         .prompt()
         .with(Source::CreatingEntry)?;
     let comments = Text::new("Notes:")
@@ -106,11 +105,11 @@ pub fn record_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let end_time = CustomType::<SimpleTime>::new("End time:")
         .prompt()
         .with(Source::CreatingEntry)?;
-    if save_data.archived_categories.options.contains(&category) {
+    if save_data.archived_categories.contains(&category) {
         println!("Category {category} is archived. Try again!");
         return record_main(save_data);
     }
-    if !save_data.categories.options.contains(&category) {
+    if !save_data.categories.contains(&category) {
         let create = Confirm::new(&format!(
             "Category {category} does not currently exist. Create it?"
         ))
@@ -171,14 +170,13 @@ pub fn stopwatch_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let end_time: SimpleTime = end_datetime.time().into();
     let category = loop {
         let category_selection = Text::new("Select a category:")
-            .with_autocomplete(&save_data.categories)
+            .with_autocomplete(CategoriesCompleter(&save_data.categories))
             .prompt()
             .with(Source::CreatingEntry)?;
-        if save_data.categories.options.contains(&category_selection) {
+        if save_data.categories.contains(&category_selection) {
             break category_selection;
         } else if save_data
             .archived_categories
-            .options
             .contains(&category_selection)
         {
             println!("Category {category_selection} is archived. Try again!");
@@ -271,7 +269,7 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
         .prompt()
         .with(Source::EditingEntry)?;
     let category = Text::new("Select a category:")
-        .with_autocomplete(&save_data.categories)
+        .with_autocomplete(CategoriesCompleter(&save_data.categories))
         .with_default(&save_data.events[index].category)
         .prompt()
         .with(Source::EditingEntry)?;
@@ -285,11 +283,11 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
         .prompt()
         .with(Source::EditingEntry)?;
 
-    if save_data.archived_categories.options.contains(&category) {
+    if save_data.archived_categories.contains(&category) {
         // println!("Cannot update event with archived category {category}.");
         return Err(Kind::CategoryArchived(category).with(Source::EditingEntry));
     }
-    if !save_data.categories.options.contains(&category) {
+    if !save_data.categories.contains(&category) {
         let create = Confirm::new(&format!(
             "Category {category} does not currently exist. Create it?"
         ))
@@ -319,9 +317,9 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
 }
 
 pub fn archive_main(save_data: SaveData, category: String) -> TaskitResult<Vec<DeltaItem>> {
-    if save_data.categories.options.contains(&category) {
+    if save_data.categories.contains(&category) {
         Ok(vec![DeltaItem::ArchiveCategory(category)])
-    } else if save_data.archived_categories.options.contains(&category) {
+    } else if save_data.archived_categories.contains(&category) {
         Err(Kind::CategoryArchived(category).with(Source::ArchivingCategory))
     } else {
         Err(Kind::NoSuchCategory(category).with(Source::ArchivingCategory))
@@ -331,8 +329,8 @@ pub fn archive_main(save_data: SaveData, category: String) -> TaskitResult<Vec<D
 pub fn tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let mut delta = vec![];
     let category = Text::new("Select a category to tag:")
-        .with_autocomplete(&save_data.categories)
-        .with_validator(&save_data.categories)
+        .with_autocomplete(CategoriesCompleter(&save_data.categories))
+        .with_validator(CategoriesCompleter(&save_data.categories))
         .prompt()
         .with(Source::UpdatingTag)?;
     let tag = Text::new("Select a tag:")
@@ -386,8 +384,8 @@ pub fn rename_category(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let new_name = Text::new("Select a new category name")
         .prompt()
         .with(Source::UpdatingCategory)?;
-    if save_data.categories.options.contains(&new_name)
-        || save_data.archived_categories.options.contains(&new_name)
+    if save_data.categories.contains(&new_name)
+        || save_data.archived_categories.contains(&new_name)
     {
         // println!("Category {new_name} already exists!");
         Err(Kind::DuplicateCategory(category).with(Source::UpdatingCategory))
@@ -427,7 +425,7 @@ pub fn delete_category_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>>
     {
         return Err(Kind::Cancelled.with(Source::DeletingCategory));
     }
-    if save_data.categories.options.contains(&category) {
+    if save_data.categories.contains(&category) {
         delta.push(DeltaItem::ArchiveCategory(category.clone()));
     }
     delta.push(DeltaItem::DeleteCategory(category));
@@ -440,7 +438,7 @@ pub fn delete_tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .with_validator(TagCompleter(save_data.tags.as_ref()))
         .prompt()
         .with(Source::DeletingTag)?;
-    let tag = if tag.starts_with('#') { tag[1..].to_owned() } else { tag };
+    let tag = if let Some(stripped) = tag.strip_prefix('#') { stripped.to_owned() } else { tag };
     if !Confirm::new(&format!(
         "Are you sure you want to delete tag #{tag}? [y/n]"
     ))

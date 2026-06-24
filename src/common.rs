@@ -1,3 +1,4 @@
+pub mod invariants;
 pub mod error;
 
 use chrono::{NaiveDate, TimeDelta, Timelike};
@@ -8,15 +9,22 @@ use inquire::{
 use serde::{Deserialize, Serialize};
 use std::{collections::{HashMap, HashSet}, fmt::Display, ops::Sub, str::FromStr};
 
-use crate::{common::error::TaskitResult, util::SetVec, input::get_description_tags};
+use error::TaskitResult;
+
+use crate::util::SetVec;
+
+pub use invariants::SaveData;
 
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
-pub struct Categories {
-    pub options: SetVec<String>,
+struct Categories {
+    options: Vec<String>,
 }
 
 #[derive(Clone)]
-pub struct CategoriesPair<'a, 'b>(pub &'a Categories, pub &'b Categories);
+pub struct CategoriesCompleter<'a>(pub &'a SetVec<String>);
+
+#[derive(Clone)]
+pub struct CategoriesPair<'a, 'b>(pub &'a SetVec<String>, pub &'b SetVec<String>);
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct SimpleTime {
@@ -96,20 +104,20 @@ impl Apply<DeltaItem> for SaveData {
     fn apply(&mut self, delta: DeltaItem) -> TaskitResult<()> {
         match delta {
             DeltaItem::AddCategory(category) => {
-                assert!(self.categories.options.push(category).is_ok());
+                assert!(self.categories.push(category).is_ok());
             }
             DeltaItem::RenameCategory { old, new } => {
                 assert!(
-                    (self.categories.options.contains(&old)
-                        && !self.categories.options.contains(&new))
-                        || (self.archived_categories.options.contains(&old)
-                            && !self.archived_categories.options.contains(&new))
+                    (self.categories.contains(&old)
+                        && !self.categories.contains(&new))
+                        || (self.archived_categories.contains(&old)
+                            && !self.archived_categories.contains(&new))
                 );
-                if self.categories.options.remove(&old).is_some() {
-                    self.categories.options.push(new.clone()).expect("category name must be previously uninhabited");
+                if self.categories.remove(&old).is_some() {
+                    self.categories.push(new.clone()).expect("category name must be previously uninhabited");
                 }
-                if self.archived_categories.options.remove(&old).is_some() {
-                    self.archived_categories.options.push(new.clone()).expect("archived category name must be previously uninhabited");
+                if self.archived_categories.remove(&old).is_some() {
+                    self.archived_categories.push(new.clone()).expect("archived category name must be previously uninhabited");
                 }
                 self.events.iter_mut().for_each(|ev| {
                     if ev.category == old {
@@ -121,7 +129,7 @@ impl Apply<DeltaItem> for SaveData {
                     .and_then(|v| self.tag_map.insert(new, v));
             }
             DeltaItem::AddEvent(event) => {
-                assert!(self.categories.options.contains(&event.category));
+                assert!(self.categories.contains(&event.category));
                 assert!(event.tags.iter().all(|tag| self.tags.contains(tag)));
                 self.events.push(event);
             }
@@ -131,8 +139,8 @@ impl Apply<DeltaItem> for SaveData {
             }
             DeltaItem::ArchiveCategory(category) => {
                 self.tag_map.remove(&category);
-                assert!(self.categories.options.remove(&category).is_some());
-                assert!(self.archived_categories.options.push(category).is_ok());
+                assert!(self.categories.remove(&category).is_some());
+                assert!(self.archived_categories.push(category).is_ok());
             }
             DeltaItem::AddTag(tag) => {
                 assert!(self.tags.push(tag).is_ok());
@@ -141,16 +149,14 @@ impl Apply<DeltaItem> for SaveData {
                 if !self.tag_map.contains_key(&category) {
                     self.tag_map.insert(category.clone(), HashSet::new());
                 }
-                if !self.tag_map[&category].contains(&tag) {
-                    if let Some(tags) = self.tag_map.get_mut(&category) {
-                        tags.insert(tag);
-                    }
+                if !self.tag_map[&category].contains(&tag) && let Some(tags) = self.tag_map.get_mut(&category) {
+                    tags.insert(tag);
                 }
             }
             DeltaItem::UntagCategory(category, tag) => {
-                self.tag_map
-                    .get_mut(&category)
-                    .map(|tags| tags.retain(|t| t != &tag));
+                if let Some(tags) = self.tag_map.get_mut(&category) {
+                    tags.retain(|t| t != &tag)
+                }
             }
             DeltaItem::SetDailyNote(date, note) => {
                 self.daily_notes.insert(date, note);
@@ -159,7 +165,7 @@ impl Apply<DeltaItem> for SaveData {
                 assert!(self.events.len() > index);
                 self.events.remove(index);
             }
-            DeltaItem::DeleteCategory(c) => self.archived_categories.options.retain(|x| x != &c),
+            DeltaItem::DeleteCategory(c) => self.archived_categories.retain(|x| x != &c),
             DeltaItem::DeleteTag(t) => {
                 assert!(self.tags.contains(&t));
                 self.tags.retain(|x| x != &t);
@@ -188,9 +194,8 @@ impl<'a, 'b> Autocomplete for CategoriesPair<'a, 'b> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
         Ok(self
             .0
-            .options
             .iter()
-            .chain(self.1.options.iter())
+            .chain(self.1.iter())
             .filter(|s| s.starts_with(input))
             .cloned()
             .collect())
@@ -208,10 +213,10 @@ impl<'a, 'b> Autocomplete for CategoriesPair<'a, 'b> {
     }
 }
 
-impl Autocomplete for &Categories {
+impl<'a> Autocomplete for CategoriesCompleter<'a> {
     fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, inquire::CustomUserError> {
         Ok(self
-            .options
+            .0
             .iter()
             .filter(|s| s.starts_with(input))
             .cloned()
@@ -264,9 +269,8 @@ impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
     ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
         if self
             .0
-            .options
             .iter()
-            .chain(self.1.options.iter())
+            .chain(self.1.iter())
             .any(|cat| cat.as_str() == input)
         {
             Ok(Validation::Valid)
@@ -276,12 +280,12 @@ impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
     }
 }
 
-impl StringValidator for &Categories {
+impl<'a> StringValidator for CategoriesCompleter<'a> {
     fn validate(
         &self,
         input: &str,
     ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
-        if self.options.contains(&input.to_owned()) {
+        if self.0.contains(&input.to_owned()) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
@@ -342,67 +346,106 @@ trait Upgrade {
     fn upgrade(self) -> Self::Next;
 }
 
+
 // =================================== VERSIONING WORK ===================================
 //               When SaveData versioning changes, update everything here
 
-// Version Update Tasks:
-//   - TODO: rewrite these
+// Version Update Tasks: (* means it requires meaningful work, - means it's automatable. parentheses
+// around things that will not be macro'd)
+//   * Write new UnverifiedSaveDataV[x] struct
+//   * impl Upgrade from previous version to new version
+//   - update UnverifiedSaveDataLatest typedef
+//   - Add to UnverifiedSaveDataVersioned
+//   - Update Default implementaion
+//   - update From<Latest> impl to reference latest version
+//   - update extract and upgrade_once to reference latest version
+//
+// potential syntax:
+// versioned_structs!{
+// UnverifiedSaveData {
+//   Version(1) {
+//     struct contents
+//   }
+//
+//   Version(2) {
+//     struct contents
+//   }
+//   
+//   Upgrade(2) {
+//     <function body>
+//   }
+// }
+// }
+//
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV1 {
-    pub categories: Categories,
-    pub events: Vec<EventV1>,
+    categories: Categories,
+    events: Vec<EventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV2 {
-    pub categories: Categories,
-    pub archived_categories: Categories,
-    pub events: Vec<EventV1>,
+    categories: Categories,
+    archived_categories: Categories,
+    events: Vec<EventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV3 {
-    pub categories: Categories,
-    pub archived_categories: Categories,
-    pub tags: Vec<String>,
+    categories: Categories,
+    archived_categories: Categories,
+    tags: Vec<String>,
     // Maps from category name to tags
-    pub tag_map: HashMap<String, Vec<String>>,
-    pub events: Vec<EventV1>,
+    tag_map: HashMap<String, Vec<String>>,
+    events: Vec<EventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV4 {
-    pub categories: Categories,
-    pub archived_categories: Categories,
-    pub tags: Vec<String>,
+    categories: Categories,
+    archived_categories: Categories,
+    tags: Vec<String>,
     // Maps from category name to tags
-    pub tag_map: HashMap<String, Vec<String>>,
-    pub events: Vec<EventV1>,
-    pub daily_notes: HashMap<NaiveDate, String>,
+    tag_map: HashMap<String, Vec<String>>,
+    events: Vec<EventV1>,
+    daily_notes: HashMap<NaiveDate, String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV5 {
-    pub categories: Categories,
-    pub archived_categories: Categories,
-    pub tags: Vec<String>,
+    categories: Categories,
+    archived_categories: Categories,
+    tags: Vec<String>,
     /// Maps from category name to tags
-    pub tag_map: HashMap<String, Vec<String>>,
-    pub events: Vec<EventV5>,
-    pub daily_notes: HashMap<NaiveDate, String>,
+    tag_map: HashMap<String, Vec<String>>,
+    events: Vec<EventV5>,
+    daily_notes: HashMap<NaiveDate, String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV6 {
-    pub categories: Categories,
-    pub archived_categories: Categories,
-    pub tags: Vec<String>,
+    categories: Categories,
+    archived_categories: Categories,
+    tags: Vec<String>,
     /// Maps from category name to tags
-    pub tag_map: HashMap<String, HashSet<String>>,
-    pub events: Vec<EventV5>,
-    pub daily_notes: HashMap<NaiveDate, String>,
+    tag_map: HashMap<String, HashSet<String>>,
+    events: Vec<EventV5>,
+    daily_notes: HashMap<NaiveDate, String>,
 }
+
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
+pub struct UnverifiedSaveDataV7 {
+    categories: Vec<String>,
+    archived_categories: Vec<String>,
+    tags: Vec<String>,
+    /// Maps from category name to tags
+    tag_map: HashMap<String, HashSet<String>>,
+    events: Vec<EventV5>,
+    daily_notes: HashMap<NaiveDate, String>,
+}
+
+pub type UnverifiedSaveDataLatest = UnverifiedSaveDataV7;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum UnverifiedSaveDataVersioned {
@@ -412,218 +455,29 @@ pub enum UnverifiedSaveDataVersioned {
     V4(UnverifiedSaveDataV4),
     V5(UnverifiedSaveDataV5),
     V6(UnverifiedSaveDataV6),
+    V7(UnverifiedSaveDataV7),
 }
 
 impl Default for UnverifiedSaveDataVersioned {
     fn default() -> Self {
-        Self::V6(Default::default())
+        Self::V7(Default::default())
     }
 }
 
-/// Each of these represents an invariant for the SaveData struct.
-#[allow(unused)]
-#[derive(Debug)]
-pub enum VerificationError {
-    /// each element of `categories` U `archived_categories` must be unique - bool is true iff
-    /// violation is between both sets, false if it is contained to one of them
-    NonUniqueCategories(String, bool),
-    /// each element of `tags` should be unique
-    NonUniqueTags(String),
-    /// no element of `tags` should contain a space
-    TagWithSpace(String),
-    /// every key in `tag_map` should be an element of `categories`
-    TagMapInvalidCategory(String),
-    /// every element of every value of `tag_map` should be an element of `tags`
-    TagMapInvalidTag(String),
-    /// `event.category` should be an element of `categories` U `archived_categories`
-    EventInvalidCategory(String),
-    /// each element of `event.tags` should be an element of `tags`
-    EventInvalidTag(String),
-    /// `event.tags` should equal the list of words prefixed with `#` in event.description
-    EventTagsMismatch {
-        in_string: HashSet<String>,
-        in_vec: HashSet<String>,
-    },
-}
-
-#[derive(Clone)]
-pub struct SaveData {
-    pub categories: Categories,
-    pub archived_categories: Categories,
-    pub tags: SetVec<String>,
-    /// Maps from category name to tags
-    pub tag_map: HashMap<String, HashSet<String>>,
-    pub events: Vec<EventV5>,
-    pub daily_notes: HashMap<NaiveDate, String>,
-}
-
-impl From<SaveData> for UnverifiedSaveDataVersioned {
-    fn from(value: SaveData) -> Self {
-        UnverifiedSaveDataVersioned::V6(UnverifiedSaveDataV6 {
-            categories: value.categories,
-            archived_categories: value.archived_categories,
-            tags: value.tags.into(),
-            tag_map: value.tag_map,
-            events: value.events,
-            daily_notes: value.daily_notes,
-        })
-    }
-}
-
-impl UnverifiedSaveDataV6 {
-    /// Ensure that all invariants hold, erroring out if they don't
-    fn verify(self) -> Result<SaveData, VerificationError> {
-        // VerificationError::NonUniqueCategories
-        for i in self.categories.options.iter() {
-            for j in self.archived_categories.options.iter() {
-                if i == j {
-                    return Err(VerificationError::NonUniqueCategories(i.clone(), true))
-                }
-            }
-        }
-        // VerificationError::NonUniqueTags
-        let mut verified_tags = SetVec::new();
-        for i in self.tags {
-            if let Err(duplicate) = verified_tags.push(i) {
-                return Err(VerificationError::NonUniqueTags(duplicate))
-            }
-        }
-        // VerificationError::TagWithSpace
-        for i in verified_tags.iter() {
-            if i.contains(char::is_whitespace) {
-                return Err(VerificationError::TagWithSpace(i.clone()));
-            }
-        }
-        // VerificationError::TagMapInvalidCategory & VerificationError::TagMapInvalidTag
-        for (cat, tags) in &self.tag_map {
-            if !self.categories.options.contains(cat) {
-                return Err(VerificationError::TagMapInvalidCategory(cat.clone()));
-            }
-            for tag in tags {
-                if !verified_tags.contains(tag) {
-                    return Err(VerificationError::TagMapInvalidTag(tag.clone()));
-                }
-            }
-        }
-        // event errors
-        for event in &self.events {
-            // VerificationError::EventInvalidCategory
-            if !self.categories.options.contains(&event.category) && !self.archived_categories.options.contains(&event.category) {
-                return Err(VerificationError::EventInvalidCategory(event.category.clone()));
-            }
-            // VerificationError::EventInvalidTag
-            for tag in &event.tags {
-                if !verified_tags.contains(tag) {
-                    return Err(VerificationError::EventInvalidTag(tag.clone()))
-                }
-            }
-            // VerificationError::EventTagsMismatch
-            let description_tags = get_description_tags(&event.description);
-            if event.tags != description_tags {
-                return Err(VerificationError::EventTagsMismatch {
-                    in_string: description_tags,
-                    in_vec: event.tags.clone(),
-                });
-            }
-        }
-
-        Ok(SaveData {
-            categories: self.categories,
-            archived_categories: self.archived_categories,
-            tags: verified_tags,
-            tag_map: self.tag_map,
-            events: self.events,
-            daily_notes: self.daily_notes,
-        })
-    }
-
-    /// Ensure that invariants hold. If they don't, try to fix them before erroring out.
-    fn fix_and_verify(mut self) -> Result<SaveData, VerificationError> {
-        // VerificationError::NonUniqueCategories
-        for i in self.categories.options.iter() {
-            for j in self.archived_categories.options.iter() {
-                if i == j {
-                    return Err(VerificationError::NonUniqueCategories(i.clone(), true))
-                }
-            }
-        }
-        // VerificationError::TagWithSpace
-        let mut changes = Vec::new();
-        for (i, tag) in self.tags.iter().enumerate() {
-            if tag.contains(char::is_whitespace) {
-                let fix = tag.replace(char::is_whitespace, "-");
-                if self.tags.contains(&fix) {
-                    return Err(VerificationError::TagWithSpace(tag.clone()));
-                } else {
-                    changes.push((i, fix));
-                }
-            }
-        }
-        for (i, fix) in changes {
-            self.tags[i] = fix;
-        }
-        // VerificationError::NonUniqueTags
-        let verified_tags: SetVec<_> = self.tags.into_iter().collect();
-        // VerificationError::TagMapInvalidCategory & VerificationError::TagMapInvalidTag
-        self.tag_map.retain(|cat, _| self.categories.options.contains(cat));
-        self.tag_map.iter_mut().for_each(|(_, tags)| tags.retain(|tag| verified_tags.contains(tag)));
-        // event errors
-        for event in &mut self.events {
-            // VerificationError::EventInvalidCategory
-            if !self.categories.options.contains(&event.category) && !self.archived_categories.options.contains(&event.category) {
-                return Err(VerificationError::EventInvalidCategory(event.category.clone()));
-            }
-            // VerificationError::EventInvalidTag
-            for tag in &event.tags {
-                if !verified_tags.contains(tag) {
-                    return Err(VerificationError::EventInvalidTag(tag.clone()))
-                }
-            }
-            // VerificationError::EventTagsMismatch
-            event.tags = get_description_tags(&event.description);
-        }
-
-        Ok(SaveData {
-            categories: self.categories,
-            archived_categories: self.archived_categories,
-            tags: verified_tags,
-            tag_map: self.tag_map,
-            events: self.events,
-            daily_notes: self.daily_notes,
-        })
+impl From<UnverifiedSaveDataLatest> for UnverifiedSaveDataVersioned {
+    fn from(value: UnverifiedSaveDataLatest) -> Self {
+        Self::V7(value)
     }
 }
 
 impl UnverifiedSaveDataVersioned {
     /// Returns the latest version of SaveData, and a bool that is true iff the format was upgraded
-    pub fn extract(mut self) -> (SaveData, bool) {
-        if let Self::V6(data) = self {
-            (data.fix_and_verify().unwrap(), false)
+    pub fn extract(self) -> (UnverifiedSaveDataLatest, bool) {
+        if let Self::V7(data) = self {
+            (data, false)
         } else {
-            while self.outdated() {
-                self = self.upgrade_once();
-            }
-            // panic safety: as_latest only panics if self.outdated(), which is guaranteed false
-            (self.fix_and_verify_latest(), true)
+            (self.upgrade_once().extract().0, true)
         }
-    }
-
-    fn fix_and_verify_latest(self) -> SaveData {
-        match self {
-            Self::V6(data) => data.fix_and_verify().unwrap(),
-            _ => panic!(),
-        }
-    }
-
-    pub fn verify_latest(self) -> Result<SaveData, VerificationError> {
-        match self {
-            Self::V6(data) => data.verify(),
-            _ => panic!(),
-        }
-    }
-
-    fn outdated(&self) -> bool {
-        !matches!(self, Self::V6(_))
     }
 
     fn upgrade_once(self) -> Self {
@@ -633,7 +487,8 @@ impl UnverifiedSaveDataVersioned {
             Self::V3(data) => Self::V4(data.upgrade()),
             Self::V4(data) => Self::V5(data.upgrade()),
             Self::V5(data) => Self::V6(data.upgrade()),
-            Self::V6(_) => panic!(),
+            Self::V6(data) => Self::V7(data.upgrade()),
+            Self::V7(_) => panic!(),
         }
     }
 }
@@ -734,6 +589,30 @@ impl Upgrade for UnverifiedSaveDataV5 {
             archived_categories,
             tags,
             tag_map: tag_map.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect(),
+            events,
+            daily_notes,
+        }
+    }
+}
+
+impl Upgrade for UnverifiedSaveDataV6 {
+    type Next = UnverifiedSaveDataV7;
+    fn upgrade(self) -> Self::Next {
+        let UnverifiedSaveDataV6 {
+            categories, 
+            archived_categories, 
+            tags, 
+            tag_map, 
+            events, 
+            daily_notes 
+        } = self;
+        let categories = categories.options.into_iter().collect();
+        let archived_categories = archived_categories.options.into_iter().collect();
+        UnverifiedSaveDataV7 {
+            categories,
+            archived_categories,
+            tags,
+            tag_map,
             events,
             daily_notes,
         }

@@ -43,7 +43,6 @@ pub mod sync {
 
     impl<T: Send, U: Send> ExternalFunction<T, U> {
         pub fn call(&self, arg: T) -> U {
-            // TODO has the phantomdata bullshit successfully enforced this guarantee?
             self.send
                 .send(arg)
                 .expect("function channel must outlive this one");
