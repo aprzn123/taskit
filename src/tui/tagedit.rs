@@ -1,6 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
-    mem,
+    collections::{HashMap, HashSet}, fmt::Display, mem
 };
 
 use crossterm::event::{Event as CEvent, KeyModifiers};
@@ -13,7 +12,7 @@ use ratatui::{
 use smallvec::SmallVec;
 
 use crate::{
-    common::{DeltaItem, SaveData, error::TaskitResult},
+    common::{DeltaItem, SaveData, error::TaskitResult, invariants::{Category, Tag}},
     tui::framework::{self, TuiState}, util::SetVec,
 };
 
@@ -40,19 +39,24 @@ enum Column {
     Right,
 }
 
+#[derive(Clone)]
+enum TagOrCategory<'a> {
+    Tag(&'a Tag),
+    Category(&'a Category),
+}
+
 struct State<'a> {
-    categories: &'a SetVec<String>,
+    categories: &'a SetVec<Category>,
     /// Maps from category name to tags
-    original_tag_map: &'a HashMap<String, HashSet<String>>,
+    original_tag_map: &'a HashMap<Category, HashSet<Tag>>,
     /// Maps from category name to tags
-    new_tag_map: HashMap<String, HashSet<String>>,
+    new_tag_map: HashMap<Category, HashSet<Tag>>,
     direction: Direction,
     column: Column,
-    /// each element is (category, tag)
-    toggles: HashSet<(String, String)>,
+    toggles: HashSet<(Category, Tag)>,
     left_list_state: ListState,
     right_list_state: ListState,
-    tags: &'a [String],
+    tags: &'a [Tag],
 }
 
 impl Direction {
@@ -88,38 +92,36 @@ impl<'a> State<'a> {
         }
     }
 
-    fn left(&self) -> &'a [String] {
-        match self.direction {
-            Direction::TagToCategory => self.tags,
-            Direction::CategoryToTag => self.categories.as_slice()
-        }
+    fn left(&self) -> impl Iterator<Item=TagOrCategory<'a>> + use<'a> {
+        matches!(self.direction, Direction::CategoryToTag).then_some(
+            self.categories.iter().map(TagOrCategory::Category)
+        ).into_iter().flatten()
+            .chain(matches!(self.direction, Direction::TagToCategory).then_some(self.tags.iter().map(TagOrCategory::Tag)).into_iter().flatten())
     }
 
-    fn right(&self) -> &'a [String] {
-        match self.direction {
-            Direction::TagToCategory => self.categories.as_slice(),
-            Direction::CategoryToTag => self.tags
-        }
+    fn right(&self) -> impl Iterator<Item=TagOrCategory<'a>> + use<'a> {
+        matches!(self.direction, Direction::TagToCategory).then_some(
+            self.categories.iter().map(TagOrCategory::Category)
+        ).into_iter().flatten()
+            .chain(matches!(self.direction, Direction::CategoryToTag).then_some(self.tags.iter().map(TagOrCategory::Tag)).into_iter().flatten())
     }
 
-    fn selected_category(&self) -> &'a str {
-        self.categories[match self.direction {
+    fn selected_category(&self) -> &'a Category {
+        &self.categories[match self.direction {
             Direction::CategoryToTag => &self.left_list_state,
             Direction::TagToCategory => &self.right_list_state,
         }
         .selected()
         .expect("one is always selected")]
-        .as_str()
     }
 
-    fn selected_tag(&self) -> &'a str {
-        self.tags[match self.direction {
+    fn selected_tag(&self) -> &'a Tag {
+        &self.tags[match self.direction {
             Direction::CategoryToTag => &self.right_list_state,
             Direction::TagToCategory => &self.left_list_state,
         }
         .selected()
         .expect("one is always selected")]
-        .as_str()
     }
 }
 
@@ -203,25 +205,25 @@ impl<'a> TuiState for State<'a> {
             vertical_layout[1],
         );
         frame.render_stateful_widget(
-            List::new(self.left().iter().map(String::as_str))
+            List::new(self.left().map(|tc| format!("{}", tc)))
                 .block(Block::bordered().border_type(BorderType::Rounded))
                 .highlight_style(self.column.hl_style(Column::Left)),
             main_panels[0],
             &mut self.left_list_state,
         );
         frame.render_stateful_widget(
-            List::new(self.right().iter().map(|right_el| {
-                let selected = match self.direction {
+            List::new(self.right().map(|right_el| {
+                let (selected_cat, selected_tag) = match self.direction {
                     Direction::CategoryToTag => {
-                        (self.selected_category().to_owned(), right_el.clone())
+                        (self.selected_category().to_owned(), right_el.clone().tag().expect("guaranteed by CategoryToTag"))
                     }
-                    Direction::TagToCategory => (right_el.clone(), self.selected_tag().to_owned()),
+                    Direction::TagToCategory => (right_el.clone().category().expect("guaranteed by TagToCategory"), self.selected_tag().to_owned()),
                 };
                 let mapping_exists = self
                     .new_tag_map
-                    .entry(selected.0)
+                    .entry(selected_cat)
                     .or_default()
-                    .contains(&selected.1);
+                    .contains(&selected_tag);
                 if mapping_exists {
                     Text::styled(format!("* {right_el}"), Style::new().bold().italic())
                 } else {
@@ -254,6 +256,31 @@ impl<'a> TuiState for State<'a> {
                 })
                 .collect()
         )
+    }
+}
+
+impl<'a> TagOrCategory<'a> {
+    fn tag(self) -> Option<Tag> {
+        match self {
+            TagOrCategory::Tag(tag) => Some(tag.clone()),
+            TagOrCategory::Category(_) => None,
+        }
+    }
+
+    fn category(self) -> Option<Category> {
+        match self {
+            TagOrCategory::Tag(_) => None,
+            TagOrCategory::Category(category) => Some(category.clone()),
+        }
+    }
+}
+
+impl<'a> Display for TagOrCategory<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TagOrCategory::Tag(tag) => tag.fmt(f),
+            TagOrCategory::Category(cat) => cat.fmt(f),
+        }
     }
 }
 

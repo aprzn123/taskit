@@ -28,10 +28,9 @@ use smallvec::SmallVec;
 
 use crate::{
     common::{
-        CategoriesPair, DeltaItem, Event, 
-        error::{Source, TaskitResult, With}, SaveData,
+        CategoriesPair, DeltaItem, Event, SaveData, error::{Source, TaskitResult, With}, invariants::{Category, Tag}
     },
-    tui::framework::{self, TuiState, sync::ExternalFunction}, util::SetVec,
+    tui::framework::{self, TuiState, sync::ExternalFunction},
 };
 
 type Extrinsic<'a> = framework::Extrinsic<State<'a>>;
@@ -60,10 +59,10 @@ impl framework::Message for Message {
 }
 
 struct State<'a> {
-    categories: &'a SetVec<String>,
-    archived_categories: &'a SetVec<String>,
-    tags: &'a [String],
-    tag_map: &'a HashMap<String, HashSet<String>>,
+    categories: &'a [Category],
+    archived_categories: &'a [Category],
+    tags: &'a [Tag],
+    tag_map: &'a HashMap<Category, HashSet<Tag>>,
     daily_notes: &'a HashMap<NaiveDate, String>,
     events: Vec<Event>,
     scroll_position: u16,
@@ -76,10 +75,10 @@ struct State<'a> {
 
 static HEADER: LazyLock<&[HeaderButton]> = LazyLock::new(|| {
     vec![
-        HeaderButton::Filter(Filter::StartDate(Default::default())),
-        HeaderButton::Filter(Filter::EndDate(Default::default())),
-        HeaderButton::Filter(Filter::Category(Default::default())),
-        HeaderButton::Filter(Filter::Description(Default::default())),
+        HeaderButton::Filter(FilterKind::StartDate),
+        HeaderButton::Filter(FilterKind::EndDate),
+        HeaderButton::Filter(FilterKind::Category),
+        HeaderButton::Filter(FilterKind::Description),
         HeaderButton::DeleteLastFilter,
         HeaderButton::ClearFilters,
     ]
@@ -89,13 +88,20 @@ static HEADER: LazyLock<&[HeaderButton]> = LazyLock::new(|| {
 enum Filter {
     StartDate(NaiveDate),
     EndDate(NaiveDate),
-    Category(String),
+    Category(Category),
     Description(String),
 }
 
+// TODO reduce duplication between Filter and FilterKind
+enum FilterKind {
+    StartDate,
+    EndDate,
+    Category,
+    Description
+}
+
 enum HeaderButton {
-    /// NOTE: argument here should be discriminant, it's only not bc rust makes that a PITA
-    Filter(Filter),
+    Filter(FilterKind),
     DeleteLastFilter,
     ClearFilters,
 }
@@ -103,14 +109,14 @@ enum HeaderButton {
 enum InquireRequest<'a, 'b, 'c> {
     DateSelect(&'a str),
     CategoryFilter {
-        categories: &'b SetVec<String>,
-        archived_categories: &'c SetVec<String>,
+        categories: &'b [Category],
+        archived_categories: &'c [Category],
     },
 }
 
 enum InquireResponse {
     Date(InquireResult<NaiveDate>),
-    Category(InquireResult<String>),
+    Category(InquireResult<Category>),
 }
 
 impl InquireResponse {
@@ -121,7 +127,7 @@ impl InquireResponse {
         }
     }
 
-    fn category(self) -> Option<InquireResult<String>> {
+    fn category(self) -> Option<InquireResult<Category>> {
         match self {
             Self::Category(c) => Some(c),
             _ => None,
@@ -132,10 +138,10 @@ impl InquireResponse {
 impl Display for HeaderButton {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HeaderButton::Filter(Filter::StartDate(_)) => write!(f, "Start Date"),
-            HeaderButton::Filter(Filter::EndDate(_)) => write!(f, "End Date"),
-            HeaderButton::Filter(Filter::Category(_)) => write!(f, "Category"),
-            HeaderButton::Filter(Filter::Description(_)) => write!(f, "Description"),
+            HeaderButton::Filter(FilterKind::StartDate) => write!(f, "Start Date"),
+            HeaderButton::Filter(FilterKind::EndDate) => write!(f, "End Date"),
+            HeaderButton::Filter(FilterKind::Category) => write!(f, "Category"),
+            HeaderButton::Filter(FilterKind::Description) => write!(f, "Description"),
             HeaderButton::DeleteLastFilter => write!(f, "(delete last)"),
             HeaderButton::ClearFilters => write!(f, "(reset)"),
         }
@@ -216,7 +222,13 @@ impl<'a> framework::TuiState for State<'a> {
                 inquire::Text::new("Select a category:")
                     .with_autocomplete(CategoriesPair(categories, archived_categories))
                     .with_validator(CategoriesPair(categories, archived_categories))
-                    .prompt(),
+                    .prompt()
+                    .map(|category| categories.iter()
+                        .chain(archived_categories.iter())
+                        .find(|c| c.inner() == category)
+                        .expect("autocomplete guaranteed validity")
+                        .clone()
+                    ),
             ),
         }
     }
@@ -236,7 +248,7 @@ impl<'a> framework::TuiState for State<'a> {
             }
             Message::Enter => {
                 match HEADER[self.header_highlight] {
-                    HeaderButton::Filter(Filter::StartDate(_)) => {
+                    HeaderButton::Filter(FilterKind::StartDate) => {
                         // temporarily breaking out of ratatui
                         execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
                             .with(Source::DrawingTui)?;
@@ -250,7 +262,7 @@ impl<'a> framework::TuiState for State<'a> {
                         self.applied_filters.push(Filter::StartDate(date));
                         return Ok(Some(Extrinsic::ResetRatatui));
                     }
-                    HeaderButton::Filter(Filter::EndDate(_)) => {
+                    HeaderButton::Filter(FilterKind::EndDate) => {
                         // temporarily breaking out of ratatui
                         execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
                             .with(Source::DrawingTui)?;
@@ -264,7 +276,7 @@ impl<'a> framework::TuiState for State<'a> {
                         self.applied_filters.push(Filter::EndDate(date));
                         return Ok(Some(Extrinsic::ResetRatatui));
                     }
-                    HeaderButton::Filter(Filter::Category(_)) => {
+                    HeaderButton::Filter(FilterKind::Category) => {
                         // temporarily breaking out of ratatui
                         execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
                             .with(Source::DrawingTui)?;
@@ -281,7 +293,7 @@ impl<'a> framework::TuiState for State<'a> {
                         self.applied_filters.push(Filter::Category(category));
                         return Ok(Some(Extrinsic::ResetRatatui));
                     }
-                    HeaderButton::Filter(Filter::Description(_)) => {
+                    HeaderButton::Filter(FilterKind::Description) => {
                         self.editing_filter = Some(Filter::Description(String::new()))
                     }
                     HeaderButton::ClearFilters => self.applied_filters.clear(),
@@ -443,7 +455,7 @@ impl<'a> framework::TuiState for State<'a> {
                                 Span::styled(duration_to_string(&duration), Style::new().dim()),
                             ]),
                             Line::default().spans(vec![
-                                Span::styled(ev.category.clone(), Style::new().blue().bold()),
+                                Span::styled(ev.category.to_string(), Style::new().blue().bold()),
                                 Span::from(" - "),
                                 ev.description.clone().into(),
                             ]),
@@ -479,10 +491,10 @@ impl<'a> framework::TuiState for State<'a> {
             .fold(
                 self.categories
                     .iter()
-                    .map(|cat| (cat.as_str(), TimeDelta::zero()))
+                    .map(|cat| (cat.inner(), TimeDelta::zero()))
                     .collect::<BTreeMap<&str, TimeDelta>>(),
                 |mut map, ev| {
-                    if let Some(t) = map.get_mut(ev.category.as_str()) {
+                    if let Some(t) = map.get_mut(ev.category.inner()) {
                         *t += ev.end_time - ev.start_time;
                     }
                     map
@@ -498,8 +510,8 @@ impl<'a> framework::TuiState for State<'a> {
             .fold(
                 self.tags
                     .iter()
-                    .map(|tag| (tag.as_str(), TimeDelta::zero()))
-                    .collect::<BTreeMap<&str, TimeDelta>>(),
+                    .map(|tag| (tag, TimeDelta::zero()))
+                    .collect::<BTreeMap<&Tag, TimeDelta>>(),
                 |mut map, ev| {
                     let tags = self
                         .tag_map
@@ -509,7 +521,7 @@ impl<'a> framework::TuiState for State<'a> {
                         .chain(&ev.tags)
                         .collect::<HashSet<_>>();
                     for tag in tags {
-                        if let Some(t) = map.get_mut(tag.as_str()) {
+                        if let Some(t) = map.get_mut(tag) {
                             *t += ev.end_time - ev.start_time;
                         }
                     }
@@ -537,7 +549,7 @@ impl<'a> framework::TuiState for State<'a> {
         .chain(iter::once(Line::default()))
         .chain(tag_sums.iter().map(|(tag, dur)| {
             Line::default().spans([
-                Span::styled(tag.to_owned(), Style::new().bold().magenta()),
+                Span::styled(tag.inner(), Style::new().bold().magenta()),
                 Span::raw(": "),
                 Span::raw(duration_to_string(dur)),
             ])

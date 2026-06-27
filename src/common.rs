@@ -11,9 +11,9 @@ use std::{collections::{HashMap, HashSet}, fmt::Display, ops::Sub, str::FromStr}
 
 use error::TaskitResult;
 
-use crate::util::SetVec;
+use crate::{common::invariants::{Category, Opaque, Tag}, util::SetVec};
 
-pub use invariants::SaveData;
+pub use invariants::{SaveData, Event};
 
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
 struct Categories {
@@ -21,10 +21,10 @@ struct Categories {
 }
 
 #[derive(Clone)]
-pub struct CategoriesCompleter<'a>(pub &'a SetVec<String>);
+pub struct CategoriesCompleter<'a>(pub &'a SetVec<Category>);
 
 #[derive(Clone)]
-pub struct CategoriesPair<'a, 'b>(pub &'a SetVec<String>, pub &'b SetVec<String>);
+pub struct CategoriesPair<'a, 'b>(pub &'a [Category], pub &'b [Category]);
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug)]
 pub struct SimpleTime {
@@ -32,34 +32,42 @@ pub struct SimpleTime {
     pub minute: u8,
 }
 
-/// One change in the save file.
+/// Represents one change in the save file. Note the use of Opaque, which is a private type used to
+/// prevent manual construction of certain variants. For these variants, use the functions with
+/// corresponding names in common::invariants instead. 
+///
+/// The private variants are those which can generate new categories or tags. For these variants, we
+/// want construction of the variant to be *inherently* tied to construction of a new Category or
+/// Tag object, which we achieve by only constructing those variants through a function that also
+/// constructs a category/tag
+#[allow(private_interfaces)]
 #[derive(Debug)]
 pub enum DeltaItem {
-    AddCategory(String),
+    AddCategory(Opaque<Category>),
     RenameCategory {
-        old: String,
-        new: String,
+        old: Category,
+        new: Opaque<Category>,
     },
-    ArchiveCategory(String),
+    ArchiveCategory(Category),
     AddEvent(Event),
     ChangeEvent {
         index: usize,
         new_event: Event,
     },
-    AddTag(String),
+    AddTag(Opaque<Tag>),
     /// category, tag
-    TagCategory(String, String),
+    TagCategory(Category, Tag),
     /// category, tag
-    UntagCategory(String, String),
+    UntagCategory(Category, Tag),
     SetDailyNote(NaiveDate, String),
     DeleteEvent(usize),
     /// Assumes category is already archived
-    DeleteCategory(String),
-    DeleteTag(String),
+    DeleteCategory(Category),
+    DeleteTag(Tag),
 }
 
 #[derive(Clone)]
-pub struct TagCompleter<'a>(pub &'a [String]);
+pub struct TagCompleter<'a>(pub &'a [Tag]);
 
 impl SimpleTime {
     pub fn try_new(hour: u8, minute: u8) -> Option<Self> {
@@ -100,87 +108,6 @@ pub trait Apply<T> {
     fn apply(&mut self, delta: T) -> TaskitResult<()>;
 }
 
-impl Apply<DeltaItem> for SaveData {
-    fn apply(&mut self, delta: DeltaItem) -> TaskitResult<()> {
-        match delta {
-            DeltaItem::AddCategory(category) => {
-                assert!(self.categories.push(category).is_ok());
-            }
-            DeltaItem::RenameCategory { old, new } => {
-                assert!(
-                    (self.categories.contains(&old)
-                        && !self.categories.contains(&new))
-                        || (self.archived_categories.contains(&old)
-                            && !self.archived_categories.contains(&new))
-                );
-                if self.categories.remove(&old).is_some() {
-                    self.categories.push(new.clone()).expect("category name must be previously uninhabited");
-                }
-                if self.archived_categories.remove(&old).is_some() {
-                    self.archived_categories.push(new.clone()).expect("archived category name must be previously uninhabited");
-                }
-                self.events.iter_mut().for_each(|ev| {
-                    if ev.category == old {
-                        ev.category = new.clone();
-                    }
-                });
-                self.tag_map
-                    .remove(&old)
-                    .and_then(|v| self.tag_map.insert(new, v));
-            }
-            DeltaItem::AddEvent(event) => {
-                assert!(self.categories.contains(&event.category));
-                assert!(event.tags.iter().all(|tag| self.tags.contains(tag)));
-                self.events.push(event);
-            }
-            DeltaItem::ChangeEvent { index, new_event } => {
-                assert!(index < self.events.len());
-                self.events[index] = new_event;
-            }
-            DeltaItem::ArchiveCategory(category) => {
-                self.tag_map.remove(&category);
-                assert!(self.categories.remove(&category).is_some());
-                assert!(self.archived_categories.push(category).is_ok());
-            }
-            DeltaItem::AddTag(tag) => {
-                assert!(self.tags.push(tag).is_ok());
-            }
-            DeltaItem::TagCategory(category, tag) => {
-                if !self.tag_map.contains_key(&category) {
-                    self.tag_map.insert(category.clone(), HashSet::new());
-                }
-                if !self.tag_map[&category].contains(&tag) && let Some(tags) = self.tag_map.get_mut(&category) {
-                    tags.insert(tag);
-                }
-            }
-            DeltaItem::UntagCategory(category, tag) => {
-                if let Some(tags) = self.tag_map.get_mut(&category) {
-                    tags.retain(|t| t != &tag)
-                }
-            }
-            DeltaItem::SetDailyNote(date, note) => {
-                self.daily_notes.insert(date, note);
-            }
-            DeltaItem::DeleteEvent(index) => {
-                assert!(self.events.len() > index);
-                self.events.remove(index);
-            }
-            DeltaItem::DeleteCategory(c) => self.archived_categories.retain(|x| x != &c),
-            DeltaItem::DeleteTag(t) => {
-                assert!(self.tags.contains(&t));
-                self.tags.retain(|x| x != &t);
-                self.tag_map
-                    .iter_mut()
-                    .for_each(|(_, v)| v.retain(|x| x != &t));
-                self.events
-                    .iter_mut()
-                    .for_each(|ev| ev.tags.retain(|x| x != &t));
-            }
-        }
-        Ok(())
-    }
-}
-
 impl Apply<Vec<DeltaItem>> for SaveData {
     fn apply(&mut self, delta: Vec<DeltaItem>) -> TaskitResult<()> {
         for delta in delta {
@@ -196,8 +123,8 @@ impl<'a, 'b> Autocomplete for CategoriesPair<'a, 'b> {
             .0
             .iter()
             .chain(self.1.iter())
-            .filter(|s| s.starts_with(input))
-            .cloned()
+            .filter(|c| c.inner().starts_with(input))
+            .map(Category::to_string)
             .collect())
     }
 
@@ -218,8 +145,8 @@ impl<'a> Autocomplete for CategoriesCompleter<'a> {
         Ok(self
             .0
             .iter()
-            .filter(|s| s.starts_with(input))
-            .cloned()
+            .filter(|c| c.inner().starts_with(input))
+            .map(Category::to_string)
             .collect())
     }
 
@@ -241,11 +168,10 @@ impl<'a> Autocomplete for TagCompleter<'a> {
         Ok(self
             .0
             .iter()
-            .filter(|s| s.starts_with(input))
+            .filter(|t| t.inner().starts_with(input))
             .cloned()
-            .map(|mut s| {
-                s.insert(0, '#');
-                s
+            .map(|t| {
+                format!("{}", t)
             })
             .collect())
     }
@@ -271,7 +197,7 @@ impl<'a, 'b> StringValidator for CategoriesPair<'a, 'b> {
             .0
             .iter()
             .chain(self.1.iter())
-            .any(|cat| cat.as_str() == input)
+            .any(|cat| cat.inner() == input)
         {
             Ok(Validation::Valid)
         } else {
@@ -285,7 +211,7 @@ impl<'a> StringValidator for CategoriesCompleter<'a> {
         &self,
         input: &str,
     ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
-        if self.0.contains(&input.to_owned()) {
+        if self.0.iter().any(|c| c.inner() == input) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
@@ -296,7 +222,7 @@ impl<'a> StringValidator for CategoriesCompleter<'a> {
 impl<'a> StringValidator for TagCompleter<'a> {
     fn validate(&self, input: &str) -> Result<Validation, inquire::CustomUserError> {
         let tag = input.strip_prefix('#').unwrap_or(input);
-        if self.0.contains(&tag.to_owned()) {
+        if self.0.iter().any(|t| t.inner() == tag) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
@@ -341,6 +267,27 @@ impl Sub for SimpleTime {
     }
 }
 
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UnverifiedEventV1 {
+    pub start_time: SimpleTime,
+    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
+    pub date: NaiveDate,
+    pub category: String,
+    pub comments: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UnverifiedEventV5 {
+    pub start_time: SimpleTime,
+    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
+    pub date: NaiveDate,
+    pub category: String,
+    #[serde(rename = "comments")]
+    pub description: String,
+    pub tags: HashSet<String>,
+}
+
 trait Upgrade {
     type Next;
     fn upgrade(self) -> Self::Next;
@@ -381,14 +328,14 @@ trait Upgrade {
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV1 {
     categories: Categories,
-    events: Vec<EventV1>,
+    events: Vec<UnverifiedEventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct UnverifiedSaveDataV2 {
     categories: Categories,
     archived_categories: Categories,
-    events: Vec<EventV1>,
+    events: Vec<UnverifiedEventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -398,7 +345,7 @@ pub struct UnverifiedSaveDataV3 {
     tags: Vec<String>,
     // Maps from category name to tags
     tag_map: HashMap<String, Vec<String>>,
-    events: Vec<EventV1>,
+    events: Vec<UnverifiedEventV1>,
 }
 
 #[derive(Serialize, Deserialize, Default, Debug, Clone)]
@@ -408,7 +355,7 @@ pub struct UnverifiedSaveDataV4 {
     tags: Vec<String>,
     // Maps from category name to tags
     tag_map: HashMap<String, Vec<String>>,
-    events: Vec<EventV1>,
+    events: Vec<UnverifiedEventV1>,
     daily_notes: HashMap<NaiveDate, String>,
 }
 
@@ -419,7 +366,7 @@ pub struct UnverifiedSaveDataV5 {
     tags: Vec<String>,
     /// Maps from category name to tags
     tag_map: HashMap<String, Vec<String>>,
-    events: Vec<EventV5>,
+    events: Vec<UnverifiedEventV5>,
     daily_notes: HashMap<NaiveDate, String>,
 }
 
@@ -430,7 +377,7 @@ pub struct UnverifiedSaveDataV6 {
     tags: Vec<String>,
     /// Maps from category name to tags
     tag_map: HashMap<String, HashSet<String>>,
-    events: Vec<EventV5>,
+    events: Vec<UnverifiedEventV5>,
     daily_notes: HashMap<NaiveDate, String>,
 }
 
@@ -440,8 +387,8 @@ pub struct UnverifiedSaveDataV7 {
     archived_categories: Vec<String>,
     tags: Vec<String>,
     /// Maps from category name to tags
-    tag_map: HashMap<String, HashSet<String>>,
-    events: Vec<EventV5>,
+    tag_map: HashMap<String, Vec<String>>,
+    events: Vec<UnverifiedEventV5>,
     daily_notes: HashMap<NaiveDate, String>,
 }
 
@@ -544,13 +491,13 @@ impl Upgrade for UnverifiedSaveDataV4 {
                 .events
                 .into_iter()
                 .map(
-                    |EventV1 {
+                    |UnverifiedEventV1 {
                          start_time,
                          end_time,
                          date,
                          category,
                          comments,
-                     }| EventV5 {
+                     }| UnverifiedEventV5 {
                         start_time,
                         end_time,
                         date,
@@ -612,42 +559,10 @@ impl Upgrade for UnverifiedSaveDataV6 {
             categories,
             archived_categories,
             tags,
-            tag_map,
+            tag_map: tag_map.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect(),
             events,
             daily_notes,
         }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EventV1 {
-    pub start_time: SimpleTime,
-    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
-    pub date: NaiveDate,
-    pub category: String,
-    pub comments: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct EventV5 {
-    pub start_time: SimpleTime,
-    pub end_time: SimpleTime, // if end_time before start_time: counts as that time on date + 1
-    pub date: NaiveDate,
-    pub category: String,
-    #[serde(rename = "comments")]
-    pub description: String,
-    pub tags: HashSet<String>,
-}
-
-pub type Event = EventV5;
-
-impl Display for Event {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}: {} ({}, {}-{})",
-            self.category, self.description, self.date, self.start_time, self.end_time
-        )
     }
 }
 

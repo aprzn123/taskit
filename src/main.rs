@@ -100,7 +100,7 @@ fn main() -> ExitCode {
         CliSubcommands::Archive { category } => input::archive_main(save_data, category),
         CliSubcommands::Tag => input::tag_main(save_data),
         CliSubcommands::Note => input::note_main(save_data),
-        CliSubcommands::RenameCategory => input::rename_category(save_data),
+        CliSubcommands::RenameCategory => input::rename_category_main(save_data),
         CliSubcommands::DeleteEvent => input::delete_event_main(save_data),
         CliSubcommands::DeleteCategory => input::delete_category_main(save_data),
         CliSubcommands::DeleteTag => input::delete_tag_main(save_data),

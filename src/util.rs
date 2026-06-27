@@ -3,6 +3,9 @@ use std::ops::Deref;
 /// A SetVec is a Vec that enforces the guarantee that no elements will be duplicated. It doesn't
 /// need anything faster than O(n) for most operations because we don't expect it to ever have 
 /// more than a few dozen elements for our use case
+///
+/// TODO: allow a SetVec to be backed by any container that derefs to [T] (because Box<[T]> might be
+/// good here? investigate further)
 #[derive(Clone, Default, Debug)]
 pub struct SetVec<T>(Vec<T>);
 
