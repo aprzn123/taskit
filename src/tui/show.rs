@@ -244,7 +244,7 @@ impl<'a> framework::TuiState for State<'a> {
             Message::ScrollUp => self.scroll_position = self.scroll_position.saturating_sub(3),
             Message::TabLeft => self.header_highlight = self.header_highlight.saturating_sub(1),
             Message::TabRight => {
-                self.header_highlight = min(self.header_highlight + 1, HEADER.len())
+                self.header_highlight = min(self.header_highlight + 1, HEADER.len() - 1)
             }
             Message::Enter => {
                 match HEADER[self.header_highlight] {
