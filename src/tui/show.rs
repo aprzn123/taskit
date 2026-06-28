@@ -455,7 +455,7 @@ impl<'a> framework::TuiState for State<'a> {
                                 Span::styled(duration_to_string(&duration), Style::new().dim()),
                             ]),
                             Line::default().spans(vec![
-                                Span::styled(ev.category.to_string(), Style::new().blue().bold()),
+                                Span::styled(ev.category.own(), Style::new().blue().bold()),
                                 Span::from(" - "),
                                 ev.description.clone().into(),
                             ]),

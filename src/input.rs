@@ -63,14 +63,14 @@ pub fn get_description_tags(description: &str) -> HashSet<String> {
 
 /// The purpose of this function is to add new tags in case the description included tags that don't exist.
 /// Retuns Ok((delta items required to add new tags, HashSet<Tag> of all tags from prospective), or Err if user refused
-fn validate_description_tags(
+fn validate_description_tags<'a>(
     prospective_tags: impl Iterator<Item=String>,
-    valid_tags: &[Tag],
+    mut valid_tags: impl Iterator<Item=&'a Tag>,
 ) -> TaskitResult<(Vec<DeltaItem>, HashSet<Tag>)> {
     let mut deltas = vec![];
     let mut tags = HashSet::new();
     for prospective_tag in prospective_tags {
-        if let Some(tag) = valid_tags.iter().find(|t| t.inner() == prospective_tag) {
+        if let Some(tag) = valid_tags.find(|t| t.inner() == prospective_tag) {
             tags.insert(tag.clone());
         } else {
             if prospective_tag.contains(' ') {
@@ -110,11 +110,11 @@ pub fn record_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let end_time = CustomType::<SimpleTime>::new("End time:")
         .prompt()
         .with(Source::CreatingEntry)?;
-    if save_data.archived_categories.iter().any(|c| c.inner() == &category) {
+    if save_data.archived_categories.contains_match(&category) {
         println!("Category {category} is archived. Try again!");
         return record_main(save_data);
     }
-    let category = if let Some(cat) = save_data.categories.iter().find(|c| c.inner() == &category) {
+    let category = if let Some(cat) = save_data.categories.find(&category) {
         cat.clone()
     } else {
         let create = Confirm::new(&format!(
@@ -132,7 +132,7 @@ pub fn record_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         }
     };
     let tags = get_description_tags(&comments);
-    let (tag_deltas, tags) = validate_description_tags(tags.into_iter(), &save_data.tags)?;
+    let (tag_deltas, tags) = validate_description_tags(tags.into_iter(), save_data.tags.iter())?;
     delta.extend(tag_deltas);
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
@@ -183,12 +183,12 @@ pub fn stopwatch_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
             .with_autocomplete(CategoriesCompleter(&save_data.categories))
             .prompt()
             .with(Source::CreatingEntry)?;
-        if let Some(category) = save_data.categories.iter().find(|c| c.inner() == category_selection) {
+        if let Some(category) = save_data.categories.find(&category_selection) {
             break category.clone();
         } else if save_data
             .archived_categories
             .iter()
-            .any(|c| c.inner() == &category_selection)
+            .any(|c| c.inner() == category_selection)
         {
             println!("Category {category_selection} is archived. Try again!");
         } else if Confirm::new(&format!(
@@ -207,7 +207,7 @@ pub fn stopwatch_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .prompt()
         .with(Source::CreatingEntry)?;
     let tags = get_description_tags(&comments);
-    let (del, tags) = validate_description_tags(tags.into_iter(), &save_data.tags)?;
+    let (del, tags) = validate_description_tags(tags.into_iter(), save_data.tags.iter())?;
     delta.extend(del);
     delta.push(DeltaItem::AddEvent(Event {
         start_time,
@@ -283,7 +283,7 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
         .with(Source::EditingEntry)?;
     let category = Text::new("Select a category:")
         .with_autocomplete(CategoriesCompleter(&save_data.categories))
-        .with_default(&save_data.events[index].category.inner())
+        .with_default(save_data.events[index].category.inner())
         .prompt()
         .with(Source::EditingEntry)?;
     let comments = Text::new("Notes:")
@@ -296,11 +296,11 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
         .prompt()
         .with(Source::EditingEntry)?;
 
-    if save_data.archived_categories.iter().any(|c| c.inner() == &category) {
+    if save_data.archived_categories.contains_match(&category) {
         // println!("Cannot update event with archived category {category}.");
         return Err(Kind::CategoryArchived(category).with(Source::EditingEntry));
     }
-    let category = if let Some(cat) = save_data.categories.iter().find(|c| c.inner() == &category) {
+    let category = if let Some(cat) = save_data.categories.find(&category) {
         cat.clone()
     } else {
         let create = Confirm::new(&format!(
@@ -318,7 +318,7 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
         }
     };
     let tags = get_description_tags(&comments);
-    let (dels, tags) = validate_description_tags(tags.into_iter(), &save_data.tags)?;
+    let (dels, tags) = validate_description_tags(tags.into_iter(), save_data.tags.iter())?;
     delta.extend(dels);
     delta.push(DeltaItem::ChangeEvent {
         index,
@@ -335,9 +335,9 @@ pub fn amend_main(save_data: SaveData, reverse_index: usize) -> TaskitResult<Vec
 }
 
 pub fn archive_main(save_data: SaveData, category: String) -> TaskitResult<Vec<DeltaItem>> {
-    if let Some(cat) = save_data.categories.iter().find(|c| c.inner() == &category) {
+    if let Some(cat) = save_data.categories.find(&category) {
         Ok(vec![DeltaItem::ArchiveCategory(cat.clone())])
-    } else if save_data.archived_categories.iter().any(|c| c.inner() == &category) {
+    } else if save_data.archived_categories.contains_match(&category) {
         Err(Kind::CategoryArchived(category).with(Source::ArchivingCategory))
     } else {
         Err(Kind::NoSuchCategory(category).with(Source::ArchivingCategory))
@@ -356,12 +356,11 @@ pub fn tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
         .prompt()
         .with(Source::UpdatingTag)?;
     let category = save_data.categories
-        .iter()
-        .find(|c| c.inner() == category)
+        .find(&category)
         .expect("validator should only allow working with already-existing categories")
         .clone();
     let tag = if let Some(stripped) = tag.strip_prefix('#') { stripped.to_owned() } else { tag };
-    let tag = if let Some(t) = save_data.tags.iter().find(|t| t.inner() == &tag) {
+    let tag = if let Some(t) = save_data.tags.find(&tag) {
         t.clone()
     } else {
         let create = Confirm::new(&format!("Tag #{tag} does not currently exist. Create it?"))
@@ -416,10 +415,10 @@ pub fn rename_category_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>>
     let new_name = Text::new("Select a new category name")
         .prompt()
         .with(Source::UpdatingCategory)?;
-    if save_data.categories.iter().chain(save_data.archived_categories.iter()).any(|c| c.inner() == &new_name)
+    if save_data.categories.iter().chain(save_data.archived_categories.iter()).any(|c| c.inner() == new_name)
     {
         // println!("Category {new_name} already exists!");
-        Err(Kind::DuplicateCategory(category.to_string()).with(Source::UpdatingCategory))
+        Err(Kind::DuplicateCategory(category.own()).with(Source::UpdatingCategory))
     } else {
         Ok(vec![rename_category(category, new_name).0])
     }
@@ -448,7 +447,7 @@ pub fn delete_category_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>>
         .iter()
         .any(|ev| ev.category == category)
     {
-        return Err(Kind::CategoryNotEmpty(category.to_string()).with(Source::DeletingCategory));
+        return Err(Kind::CategoryNotEmpty(category.own()).with(Source::DeletingCategory));
     }
     if !Confirm::new(&format!(
         "Are you sure you want to delete category {category}? [y/n]"
@@ -467,13 +466,13 @@ pub fn delete_category_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>>
 
 pub fn delete_tag_main(save_data: SaveData) -> TaskitResult<Vec<DeltaItem>> {
     let tag = Text::new("Select a tag to delete:")
-        .with_autocomplete(TagCompleter(save_data.tags.as_ref()))
-        .with_validator(TagCompleter(save_data.tags.as_ref()))
+        .with_autocomplete(TagCompleter(&save_data.tags))
+        .with_validator(TagCompleter(&save_data.tags))
         .prompt()
         .with(Source::DeletingTag)?;
     let tag = if let Some(stripped) = tag.strip_prefix('#') { stripped.to_owned() } else { tag };
-    let tag = save_data.tags.iter()
-        .find(|t| t.inner() == tag)
+    let tag = save_data.tags
+        .find(&tag)
         .expect("guaranteed to exist due to validator")
         .clone();
     if !Confirm::new(&format!(

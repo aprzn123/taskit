@@ -37,6 +37,16 @@ impl<T: PartialEq> SetVec<T> {
         self.0.contains(el)
     }
 
+    pub fn find<U>(&self, el: &U) -> Option<&T>
+    where T: Deref<Target=U>, U: PartialEq + ?Sized {
+        self.0.iter().find(|&t| t.deref() == el)
+    }
+
+    pub fn contains_match<U>(&self, el: &U) -> bool
+    where T: Deref<Target=U>, U: PartialEq + ?Sized {
+        self.find(el).is_some()
+    }
+
     pub fn as_slice(&self) -> &[T] {
         self.0.as_slice()
     }

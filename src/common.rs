@@ -67,7 +67,7 @@ pub enum DeltaItem {
 }
 
 #[derive(Clone)]
-pub struct TagCompleter<'a>(pub &'a [Tag]);
+pub struct TagCompleter<'a>(pub &'a SetVec<Tag>);
 
 impl SimpleTime {
     pub fn try_new(hour: u8, minute: u8) -> Option<Self> {
@@ -124,7 +124,7 @@ impl<'a, 'b> Autocomplete for CategoriesPair<'a, 'b> {
             .iter()
             .chain(self.1.iter())
             .filter(|c| c.inner().starts_with(input))
-            .map(Category::to_string)
+            .map(Category::own)
             .collect())
     }
 
@@ -146,7 +146,7 @@ impl<'a> Autocomplete for CategoriesCompleter<'a> {
             .0
             .iter()
             .filter(|c| c.inner().starts_with(input))
-            .map(Category::to_string)
+            .map(Category::own)
             .collect())
     }
 
@@ -169,7 +169,6 @@ impl<'a> Autocomplete for TagCompleter<'a> {
             .0
             .iter()
             .filter(|t| t.inner().starts_with(input))
-            .cloned()
             .map(|t| {
                 format!("{}", t)
             })
@@ -211,7 +210,7 @@ impl<'a> StringValidator for CategoriesCompleter<'a> {
         &self,
         input: &str,
     ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
-        if self.0.iter().any(|c| c.inner() == input) {
+        if self.0.contains_match(input) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))
@@ -222,7 +221,7 @@ impl<'a> StringValidator for CategoriesCompleter<'a> {
 impl<'a> StringValidator for TagCompleter<'a> {
     fn validate(&self, input: &str) -> Result<Validation, inquire::CustomUserError> {
         let tag = input.strip_prefix('#').unwrap_or(input);
-        if self.0.iter().any(|t| t.inner() == tag) {
+        if self.0.contains_match(tag) {
             Ok(Validation::Valid)
         } else {
             Ok(Validation::Invalid(ErrorMessage::Default))

@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, fmt::Display, sync::Arc};
+use std::{collections::{HashMap, HashSet}, fmt::Display, ops::Deref, sync::Arc};
 
 use chrono::NaiveDate;
 
@@ -34,7 +34,6 @@ pub enum VerificationError {
 
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
 /// Guaranteed to be a valid category
-/// Theoretically, this could be interned...
 pub struct Category(Arc<str>);
 
 impl Category {
@@ -119,9 +118,9 @@ impl UnverifiedSaveDataLatest {
         // VerificationError::TagMapInvalidCategory & VerificationError::TagMapInvalidTag
         let mut tag_map = HashMap::new();
         for (cat, map_tags) in self.tag_map {
-            let key = categories.iter().find(|c| c.inner() == &cat).ok_or_else(|| VerificationError::TagMapInvalidCategory(cat.clone()))?.clone();
+            let key = categories.find(&cat).ok_or_else(|| VerificationError::TagMapInvalidCategory(cat.clone()))?.clone();
             let val = map_tags.into_iter().try_fold(HashSet::new(), |mut set, tag_name| {
-                let tag = tags.iter().find(|t| t.inner() == &tag_name).ok_or(VerificationError::TagMapInvalidTag(tag_name))?.clone();
+                let tag = tags.find(&tag_name).ok_or(VerificationError::TagMapInvalidTag(tag_name))?.clone();
                 if set.insert(tag.clone()) {
                     Ok(set)
                 } else {
@@ -135,19 +134,19 @@ impl UnverifiedSaveDataLatest {
         let mut events = Vec::new();
         for event in self.events {
             // VerificationError::EventInvalidCategory
-            let category = categories.iter().chain(archived_categories.iter()).find(|cat| cat.inner() == &event.category).ok_or_else(|| VerificationError::EventInvalidCategory(event.category))?.clone();
+            let category = categories.iter().chain(archived_categories.iter()).find(|cat| cat.inner() == event.category).ok_or_else(|| VerificationError::EventInvalidCategory(event.category))?.clone();
 
             // VerificationError::EventInvalidTag
             let tags = event.tags.into_iter().map(|tag|
-                tags.iter()
-                .find(|t| t.inner() == &tag)
+                tags
+                .find(&tag)
                 .cloned()
                 .ok_or_else(|| VerificationError::EventInvalidTag(tag))
             ).collect::<Result<HashSet<Tag>, VerificationError>>()?;
 
             // VerificationError::EventTagsMismatch
             let description_tags = get_description_tags(&event.description);
-            if tags != description_tags.iter().cloned().map(|t| Tag::new(t)).collect() {
+            if tags != description_tags.iter().cloned().map(Tag::new).collect() {
                 return Err(VerificationError::EventTagsMismatch {
                     in_string: description_tags,
                     in_vec: tags.iter().map(|t| t.inner().to_owned()).collect(),
@@ -208,14 +207,13 @@ impl UnverifiedSaveDataLatest {
         // tags.iter_mut().map(|e| *e = Tag(String::new()));
 
         // VerificationError::TagMapInvalidCategory & VerificationError::TagMapInvalidTag
-        self.tag_map.retain(|cat, _| categories.iter().any(|c| c.inner() == cat));
-        self.tag_map.iter_mut().for_each(|(_, map_tags)| map_tags.retain(|tag| tags.iter().any(|t| t.inner() == tag)));
+        self.tag_map.retain(|cat, _| categories.contains_match(cat));
+        self.tag_map.iter_mut().for_each(|(_, map_tags)| map_tags.retain(|tag| tags.contains_match(tag)));
         let tag_map = self.tag_map
             .into_iter()
-            .filter_map(|(cat, map_tags)| categories.iter()
-                .find(|c| c.inner() == &cat)
+            .filter_map(|(cat, map_tags)| categories.find(&cat)
                 .map(|cat| (cat.clone(), map_tags.into_iter().filter_map(|tag|
-                    tags.iter().find(|t| t.inner() == &tag).cloned()
+                    tags.find(&tag).cloned()
                 ).collect())))
             .collect();
 
@@ -223,13 +221,13 @@ impl UnverifiedSaveDataLatest {
         let mut events = Vec::new();
         for event in self.events {
             // VerificationError::EventInvalidCategory
-            let category = categories.iter().chain(archived_categories.iter()).find(|cat| cat.inner() == &event.category).ok_or_else(|| VerificationError::EventInvalidCategory(event.category))?.clone();
+            let category = categories.iter().chain(archived_categories.iter()).find(|cat| cat.inner() == event.category).ok_or_else(|| VerificationError::EventInvalidCategory(event.category))?.clone();
 
             // VerificationError::EventTagsMismatch
             let event_tags = get_description_tags(&event.description);
 
             // VerificationError::EventInvalidTag
-            let tags = event_tags.into_iter().map(|tag| tags.iter().find(|t| t.inner() == &tag).ok_or(VerificationError::EventInvalidTag(tag)).cloned()).collect::<Result<_, _>>()?;
+            let tags = event_tags.into_iter().map(|tag| tags.find(&tag).ok_or(VerificationError::EventInvalidTag(tag)).cloned()).collect::<Result<_, _>>()?;
 
             events.push(Event {
                 start_time: event.start_time,
@@ -258,9 +256,9 @@ impl From<Event> for UnverifiedEventV5 {
             start_time: value.start_time,
             end_time: value.end_time,
             date: value.date,
-            category: value.category.to_string(),
+            category: value.category.own(),
             description: value.description,
-            tags: value.tags.into_iter().map(Tag::to_string).collect(),
+            tags: value.tags.into_iter().map(Tag::own).collect(),
         }
     }
 }
@@ -268,10 +266,10 @@ impl From<Event> for UnverifiedEventV5 {
 impl From<SaveData> for UnverifiedSaveDataLatest {
     fn from(value: SaveData) -> Self {
         UnverifiedSaveDataLatest {
-            categories: value.categories.iter().map(Category::to_string).collect(),
-            archived_categories: value.archived_categories.iter().map(Category::to_string).collect(),
-            tags: value.tags.into_iter().map(Tag::to_string).collect(),
-            tag_map: value.tag_map.into_iter().map(|(k, v)| (k.to_string(), v.into_iter().map(Tag::to_string).collect())).collect(),
+            categories: value.categories.iter().map(Category::own).collect(),
+            archived_categories: value.archived_categories.iter().map(Category::own).collect(),
+            tags: value.tags.into_iter().map(Tag::own).collect(),
+            tag_map: value.tag_map.into_iter().map(|(k, v)| (k.own(), v.into_iter().map(Tag::own).collect())).collect(),
             events: value.events.into_iter().map(Into::into).collect(),
             daily_notes: value.daily_notes,
         }
@@ -284,8 +282,24 @@ impl From<SaveData> for UnverifiedSaveDataVersioned {
     }
 }
 
+impl Deref for Tag {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
+impl Deref for Category {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
+    }
+}
+
 impl Tag {
-    pub fn to_string(self) -> String {
+    pub fn own(self) -> String {
         self.0.to_string()
     }
 
@@ -295,7 +309,7 @@ impl Tag {
 }
 
 impl Category {
-    pub fn to_string(&self) -> String {
+    pub fn own(&self) -> String {
         self.0.to_string()
     }
 
