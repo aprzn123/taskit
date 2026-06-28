@@ -15,7 +15,7 @@ use crossterm::{
     execute,
     terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode},
 };
-use inquire::error::InquireResult;
+use inquire::{InquireError, error::InquireResult};
 use itertools::Itertools;
 use ratatui::{
     Frame,
@@ -253,13 +253,19 @@ impl<'a> framework::TuiState for State<'a> {
                         execute!(stdout(), Clear(ClearType::All), MoveTo(0, 0))
                             .with(Source::DrawingTui)?;
                         disable_raw_mode().with(Source::DrawingTui)?;
-                        let date = call
+                        let  date = call
                             .call(InquireRequest::DateSelect("Start date filter:"))
                             .date()
-                            .expect("requested a date")
-                            .with(Source::SettingFilter)?;
+                            .expect("requested a date");
+                        let date = match date {
+                            Ok(d) => Some(d),
+                            Err(InquireError::OperationCanceled) => None,
+                            Err(e) => Err((e, Source::SettingFilter))?,
+                        };
                         enable_raw_mode().with(Source::DrawingTui)?;
-                        self.applied_filters.push(Filter::StartDate(date));
+                        if let Some(date) = date {
+                            self.applied_filters.push(Filter::StartDate(date));
+                        }
                         return Ok(Some(Extrinsic::ResetRatatui));
                     }
                     HeaderButton::Filter(FilterKind::EndDate) => {
@@ -270,10 +276,16 @@ impl<'a> framework::TuiState for State<'a> {
                         let date = call
                             .call(InquireRequest::DateSelect("End date filter:"))
                             .date()
-                            .expect("requested a date")
-                            .with(Source::SettingFilter)?;
+                            .expect("requested a date");
+                        let date = match date {
+                            Ok(d) => Some(d),
+                            Err(InquireError::OperationCanceled) => None,
+                            Err(e) => Err((e, Source::SettingFilter))?,
+                        };
                         enable_raw_mode().with(Source::DrawingTui)?;
-                        self.applied_filters.push(Filter::EndDate(date));
+                        if let Some(date) = date {
+                            self.applied_filters.push(Filter::EndDate(date));
+                        }
                         return Ok(Some(Extrinsic::ResetRatatui));
                     }
                     HeaderButton::Filter(FilterKind::Category) => {
@@ -287,10 +299,16 @@ impl<'a> framework::TuiState for State<'a> {
                                 archived_categories: self.archived_categories,
                             })
                             .category()
-                            .expect("requested a category")
-                            .with(Source::SettingFilter)?;
+                            .expect("requested a category");
+                        let category = match category {
+                            Ok(c) => Some(c),
+                            Err(InquireError::OperationCanceled) => None,
+                            Err(e) => Err((e, Source::SettingFilter))?,
+                        };
                         enable_raw_mode().with(Source::DrawingTui)?;
-                        self.applied_filters.push(Filter::Category(category));
+                        if let Some(category) = category {
+                            self.applied_filters.push(Filter::Category(category));
+                        }
                         return Ok(Some(Extrinsic::ResetRatatui));
                     }
                     HeaderButton::Filter(FilterKind::Description) => {
