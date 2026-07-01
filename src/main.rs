@@ -24,6 +24,10 @@ struct CliArgs {
     /// Use a different config file than the one at ~/.config/taskit/config.toml
     #[arg(long)]
     config: Option<PathBuf>,
+    
+    /// Use a different save file than the one at ~/.local/share/taskit/save.json
+    #[arg(long)]
+    save: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -88,7 +92,7 @@ fn main() -> ExitCode {
     }).unwrap_or_default();
     CONFIG_WRITE.set(config).expect("this should be the only set call in the program");
 
-    let save_data_file_path = {
+    let save_data_file_path = cli_args.save.unwrap_or_else(|| {
         let mut path = project_dirs.data_dir().to_path_buf();
         if !path.exists() {
             println!("data directory does not exist. creating...");
@@ -97,7 +101,7 @@ fn main() -> ExitCode {
         }
         path.push("save.json");
         path
-    };
+    });
     let (save_data, upgraded) = read_save_data(&save_data_file_path).extract();
     let save_data = save_data.fix_and_verify().expect("save file must be well-formed");
     if upgraded {
