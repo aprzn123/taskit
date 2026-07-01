@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use common::{Apply, SaveData, UnverifiedSaveDataVersioned};
 use directories::ProjectDirs;
 
-use crate::common::{UnverifiedSaveDataLatest, config::{CONFIG, CONFIG_WRITE, Config}};
+use crate::common::{UnverifiedSaveDataLatest, config::CONFIG_WRITE};
 
 #[derive(clap::Parser, Debug)]
 struct CliArgs {
