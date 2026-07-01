@@ -9,13 +9,17 @@ Taskit is a terminal-based time tracking software. No official release has been 
 - Make comments on an entire day with daily notes
 - Group entries into categories for different types of task
 - Archive out-of-use categories
-- Group categories into tags to track larger-scale potentially overlapping blocks of time
+- Group categories into tags using a TUI to track larger-scale and potentially overlapping blocks of time
 - Display recorded events in a TUI, including
     - Total time over events in categories and tags
     - Filters for date, category, etc
 
-Planned changes before the first release:
-- Interface for editing category-tag map
+## Installation
+prerequisites: Rust, Cargo
+1. `$ git clone https://github.com/aprzn123/taskit.git`
+2. `$ cd taskit`
+3. `$ cargo install --path .`
+Once published to cargo, this will be simplified down to just `cargo install taskit`
 
 ## Architecture
 Taskit's current design groups its subcommands into `input` and `output` modules. The latter has been renamed to `tui`, because in practice this means that most subcommands go in `input.rs` and the TUI, which is much more complex than any other subcommand, goes in `tui.rs`. Each subcommand is a function that takes the save data as input and outputs a list of `DeltaItem`s, which represent changes to the save file. After user input is complete, the save file is read a second time and the `DeltaItem`s are applied before it is written back. This architecture was chosen because it prevents two simultaneously-open instances of `taskit` from stepping on one anothers' toes. It doesn't account for two instances finishing at the same moment because that is extremely unlikely to happen accidentally, considering the small filesizes in question and the fact that a taskit instance normally only exits upon receiving some user input.

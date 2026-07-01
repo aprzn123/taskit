@@ -430,6 +430,7 @@ impl Apply<DeltaItem> for SaveData {
             DeltaItem::DeleteCategory(c) => self.archived_categories.retain(|x| x != &c),
             DeltaItem::DeleteTag(t) => {
                 assert!(self.tags.contains(&t));
+                assert!(self.events.iter().all(|ev| !ev.tags.contains(&t)));
                 self.tags.retain(|x| x != &t);
                 self.tag_map
                     .iter_mut()
