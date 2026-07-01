@@ -6,7 +6,7 @@ mod util;
 use std::{
     fs::{File, create_dir_all, rename},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
@@ -14,12 +14,16 @@ use clap::{Parser, Subcommand};
 use common::{Apply, SaveData, UnverifiedSaveDataVersioned};
 use directories::ProjectDirs;
 
-use crate::common::UnverifiedSaveDataLatest;
+use crate::common::{UnverifiedSaveDataLatest, config::{CONFIG, CONFIG_WRITE, Config}};
 
 #[derive(clap::Parser, Debug)]
 struct CliArgs {
     #[command(subcommand)]
     command: CliSubcommands,
+
+    /// Use a different config file than the one at ~/.config/taskit/config.toml
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -70,6 +74,20 @@ fn main() -> ExitCode {
     )
     .expect("assume that there is a home directory");
 
+    let cli_args = CliArgs::parse();
+
+    let config_file_path = cli_args.config.unwrap_or_else(|| {
+        let mut path = project_dirs.config_local_dir().to_path_buf();
+        path.push("config.toml");
+        path
+    });
+    let config = File::open(config_file_path).and_then(|mut text| {
+        let mut s = String::new(); 
+        text.read_to_string(&mut s)?; 
+        Ok(toml::from_str(&s).unwrap_or_default())
+    }).unwrap_or_default();
+    CONFIG_WRITE.set(config).expect("this should be the only set call in the program");
+
     let save_data_file_path = {
         let mut path = project_dirs.data_dir().to_path_buf();
         if !path.exists() {
@@ -90,7 +108,6 @@ fn main() -> ExitCode {
         .expect("assume file rename is possible");
         write_save_data(save_data.clone(), &save_data_file_path);
     }
-    let cli_args = CliArgs::parse();
     let save_delta = match cli_args.command {
         CliSubcommands::Record => input::record_main(save_data),
         CliSubcommands::Stopwatch => input::stopwatch_main(save_data),

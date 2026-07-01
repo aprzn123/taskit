@@ -1,19 +1,50 @@
 pub mod invariants;
 pub mod error;
 
-use chrono::{NaiveDate, TimeDelta, Timelike};
+use chrono::{DateTime, Local, NaiveDate, TimeDelta, Timelike};
 use inquire::{
     Autocomplete,
     validator::{ErrorMessage, StringValidator, Validation},
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, fmt::Display, ops::Sub, str::FromStr};
+use toml::Table;
+use std::{cell::LazyCell, collections::{HashMap, HashSet}, fmt::Display, ops::Sub, str::FromStr};
 
 use error::TaskitResult;
 
-use crate::{common::invariants::{Category, Opaque, Tag}, util::SetVec};
+use crate::{common::{config::CONFIG, invariants::{Category, Opaque, Tag}}, util::SetVec};
 
 pub use invariants::{SaveData, Event};
+
+
+pub mod config {
+    use std::sync::{LazyLock, OnceLock};
+
+    use serde::Deserialize;
+
+    pub static CONFIG_WRITE: OnceLock<Config> = OnceLock::new();
+    // stupid fucking hack so i don't have to unwrap every time i query CONFIG
+    pub static CONFIG: LazyLock<&Config> = LazyLock::new(|| CONFIG_WRITE.get().unwrap());
+
+    #[derive(Deserialize, Default, Debug)]
+    pub struct Config {
+        #[serde(rename = "preferences")]
+        pub prefs: Preferences
+    }
+
+    #[derive(Deserialize, Default, Debug)]
+    pub struct Preferences {
+        #[serde(default)]
+        pub use_12hr_time: bool,
+        /// When 12hr time is enabled and neither AM nor PM is specified for a time, when this is
+        /// set to false (the default) the input won't be accepted. When it's set to true, we select
+        /// AM or PM based on whichever one is closer to the current time.
+        /// When 12hr time is disabled, this does nothing
+        #[serde(default)]
+        pub guess_am_pm: bool,
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Default, Debug)]
 struct Categories {
@@ -77,30 +108,62 @@ impl SimpleTime {
             None
         }
     }
+
+    pub fn try_new_12hr(hour: u8, minute: u8, pm: bool) -> Option<Self> {
+        let hour = if hour == 0 { return None }
+                   else if hour == 12 { 0 }
+                   else { hour };
+        if hour < 12 && minute < 60 {
+            Some(Self { hour: hour + if pm {12} else {0}, minute })
+        } else {
+            None
+        }
+    }
+    
+    pub fn now() -> Self {
+        let now = Local::now();
+        Self {
+            hour: now.hour() as u8,
+            minute: now.minute() as u8,
+        }
+    }
 }
 
 impl FromStr for SimpleTime {
     type Err = ();
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        fn get_time_unchecked(input: &str) -> Option<(u8, u8)> {
-            let (hour, minute) = if let Some(idx) = input.find(':') {
-                // time with colon
-                let (hour, minute) = input.split_at(idx);
-                (hour, &minute[1..])
-            } else if input.len() == 4 {
-                // time without colon
-                let (hour, minute) = input.split_at(2);
-                (hour, minute)
-            } else {
-                // not long enough regardless
-                return None;
-            };
-            Some((hour.parse().ok()?, minute.parse().ok()?))
+        // is this actually any better than just using lazylock
+        thread_local! {
+            static RE: LazyCell<Regex> = LazyCell::new(|| Regex::new(r"^(?:(?<hour>\d\d?):(?<minute>\d\d)|(?<hour2>\d\d?)(?<minute2>\d\d))\s*(?:(?<ap>[apAP])[mM]?)?$").expect("regex should compile"));
         }
+        let captures = RE.with(|re| re.captures(s)).ok_or(())?;
+        let hour = captures.name("hour").or_else(|| captures.name("hour2")).ok_or(())?.as_str().parse().ok().ok_or(())?;
+        let minute = captures.name("minute").or_else(|| captures.name("minute2")).ok_or(())?.as_str().parse().ok().ok_or(())?;
 
-        let (hour, minute) = get_time_unchecked(s).ok_or(())?;
-        Self::try_new(hour, minute).ok_or(())
+        // AM/PM logic:
+        // Under 24hr time, fail if we see AM or PM at all
+        // Under 12hr time, without guessing enabled, fail if we don't see AM or PM, use specified
+        // if we do
+        // Under 12hr time, with guessing enabled, guess if we don't see AM or PM, use specified if
+        // we do
+        if CONFIG.prefs.use_12hr_time {
+            let pm = if let Some(ap) = captures.name("ap") {
+                ap.as_str().to_lowercase() == "p"
+            } else if CONFIG.prefs.guess_am_pm {
+                let am_option = Self::try_new_12hr(hour, minute, false).ok_or(())?;
+                let now = Self::now();
+                now - am_option > TimeDelta::hours(6) && now - am_option < TimeDelta::hours(18)
+            } else {
+                Err(())?
+            };
+            Self::try_new_12hr(hour, minute, pm).ok_or(())
+        } else {
+            if captures.name("ap").is_some() {
+                Err(())?
+            }
+            Self::try_new(hour, minute).ok_or(())
+        }
     }
 }
 
@@ -247,7 +310,12 @@ impl TryFrom<SimpleTime> for chrono::NaiveTime {
 
 impl Display for SimpleTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:02}:{:02}", self.hour, self.minute)
+        if CONFIG.prefs.use_12hr_time {
+            let hour = self.hour % 12;
+            write!(f, "{:02}:{:02} {}", if hour == 0 {12} else {hour}, self.minute, if self.hour >= 12 {"pm"} else {"am"})
+        } else {
+            write!(f, "{:02}:{:02}", self.hour, self.minute)
+        }
     }
 }
 
@@ -265,7 +333,6 @@ impl Sub for SimpleTime {
         TimeDelta::minutes(minutes)
     }
 }
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UnverifiedEventV1 {
