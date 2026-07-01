@@ -1,3 +1,9 @@
 [preferences]
-use_12hr_time = true
-guess_am_pm = true
+
+# For both input and display
+use_12hr_time = false
+
+# Only has an effect if use_12hr_time is set to true. When inputting times without specifying AM or PM, guesses
+# whichever option is closer to the current time. For instance, if the current time is 11:00 AM and you enter
+# "2:00", it will interpret that as 2:00 PM.
+guess_am_pm = false

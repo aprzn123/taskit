@@ -6,6 +6,8 @@ fully workable and usable state.
 ## Features
 - A minimal interface designed to be intuitive to use while minimizing barriers to consistent usage such as
 extraneous inputs
+- Cross-platform support (I only use Linux so I can't test on Windows or MacOS, but from what I've
+heard from my friends it works fine)
 - Add time spent with either a stopwatch (`taskit time`) or by manually entering times (`taskit add`)
 - Amend previous entries to correct errors
 - Make comments on an entire day with daily notes
@@ -22,6 +24,10 @@ prerequisites: Rust, Cargo
 2. `$ cd taskit`
 3. `$ cargo install --path .`
 Once published to cargo, this will be simplified down to just `cargo install taskit`
+
+## Configuration
+The configuration file is located at `~/.config/taskit/config.toml`. The full list of config options, along
+with their defaults, is available in `taskit.toml` in this repository.
 
 ## Architecture
 Most of the architectural complexity in Taskit comes from a simple central decision. Let me guide you towards
