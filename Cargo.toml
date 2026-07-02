@@ -1,7 +1,13 @@
 [package]
-name = "taskit"
+name = "taskit-tracker"
 version = "0.1.0"
 edition = "2024"
+description = "A TUI to track time spent on activities"
+license = "GPL-3.0"
+readme = "README.md"
+documentation = "https://github.com/aprzn123/taskit#taskit"
+homepage = "https://github.com/aprzn123/taskit#taskit"
+repository = "https://github.com/aprzn123/taskit"
 
 [dependencies]
 chrono = { version = "0.4.42", features = ["serde"] }

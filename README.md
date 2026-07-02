@@ -23,7 +23,7 @@ prerequisites: Rust, Cargo
 1. `$ git clone https://github.com/aprzn123/taskit.git`
 2. `$ cd taskit`
 3. `$ cargo install --path .`
-Once published to cargo, this will be simplified down to just `cargo install taskit`
+Once published to cargo, this will be simplified down to just `cargo install taskit-tracker`
 
 ## Configuration
 The configuration file is located at `~/.config/taskit/config.toml`. The full list of config options, along
